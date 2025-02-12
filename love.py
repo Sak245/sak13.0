@@ -1,5 +1,4 @@
 import streamlit as st
-from typing import TypedDict
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct, VectorParams, Distance
@@ -7,6 +6,7 @@ from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import requests
 import uuid
+from typing import TypedDict
 
 # =====================
 # 🔑 User Configuration
