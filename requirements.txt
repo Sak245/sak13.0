@@ -15,4 +15,4 @@ re
 logging
 torch
 sentence-transformers
-python3.10
+
