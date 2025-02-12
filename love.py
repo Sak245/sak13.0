@@ -50,7 +50,7 @@ class KnowledgeBase:
         for summary in summaries:
             embedding = self.embeddings.embed_query(summary)
             point = PointStruct(
-                id=str(uuid.uuid4()),  # ✅ String ID required
+                id=str(uuid.uuid4()),  # Use a unique string ID
                 vector=embedding,
                 payload={"text": summary}
             )
@@ -66,7 +66,7 @@ class KnowledgeBase:
                 if "Text" in result:
                     embedding = self.embeddings.embed_query(result["Text"])
                     point = PointStruct(
-                        id=str(uuid.uuid4()),  # ✅ Ensure unique ID
+                        id=str(uuid.uuid4()),  # Use a unique string ID
                         vector=embedding,
                         payload={"text": result["Text"], "url": result.get("FirstURL")}
                     )
@@ -77,7 +77,7 @@ class KnowledgeBase:
     def search(self, query: str):
         """Search vector store for relevant context."""
         embedding = self.embeddings.embed_query(query)
-        results = self.client.search(  # ✅ Fixed incorrect function
+        results = self.client.query_points(
             collection_name=self.collection_name,
             query_vector=embedding,
             limit=3,
@@ -105,7 +105,7 @@ class LoveBot:
         ]
         
         try:
-            response = self.client.chat_completions.create(  # ✅ Fixed incorrect API call
+            response = self.client.chat.completions.create(
                 messages=messages,
                 model="mixtral-8x7b-32768",
                 temperature=0.7,
@@ -143,7 +143,7 @@ def retrieve_context(state: BotState):
     # Handle empty results gracefully
     if not docs:
         return {"context": "[No relevant context found]"}
-
+    
     return {"context": "\n".join(docs)}
 
 def generate_response(state: BotState):
