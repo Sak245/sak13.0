@@ -86,7 +86,6 @@ class KnowledgeBase:
         return [r.payload["text"] for r in results if "text" in r.payload]
 
 kb = KnowledgeBase()
-kb.initialize()
 
 # =====================
 # 🧠 AI Core (Groq Integration)
