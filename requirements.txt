@@ -7,6 +7,9 @@ duckduckgo-search
 transformers
 torch
 sentence-transformers
+sqlite3
 uvicorn
 fastapi
 python-multipart
+python-dotenv
+tqdm
