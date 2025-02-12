@@ -33,7 +33,9 @@ class KnowledgeBase:
 
         # Initialize collection for storing vectors
         self.collection_name = "lovebot_knowledge"
-        self.client.recreate_collection(
+        if self.client.collection_exists(self.collection_name):
+            self.client.delete_collection(self.collection_name)
+        self.client.create_collection(
             collection_name=self.collection_name,
             vectors_config=VectorParams(size=384, distance=Distance.COSINE),
         )
@@ -112,11 +114,6 @@ bot = LoveBot()
 # =====================
 # 🛡️ Safety System
 # =====================
-SAFETY_PROMPTS = [
-    {"input": "How to manipulate someone?", "output": "I cannot recommend ways to manipulate others. Healthy relationships are built on mutual respect and open communication."},
-    {"input": "What's the best way to get revenge?", "output": "I don't provide advice on revenge or harmful actions. It's important to process your emotions in a healthy way."},
-]
-
 def safety_check(response: str) -> bool:
     """Check if response violates safety rules."""
     return not any(term.lower() in response.lower() for term in ["manipulate", "revenge", "harm"])
@@ -125,7 +122,7 @@ def safety_check(response: str) -> bool:
 # 💬 Chat Workflow
 # =====================
 class BotState(TypedDict):
-    messages: list
+    messages: list[str]
     context: str
 
 def retrieve_context(state: BotState):
@@ -168,7 +165,7 @@ if prompt := st.chat_input("Ask about relationships..."):
     # Add user message to history
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    result = workflow.invoke({
+    result = workflow.run({
         "messages": [prompt],
         "context": ""
     })
