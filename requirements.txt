@@ -8,3 +8,4 @@ requests
 torch 
 torchvision
 uuid
+duckduckgo-search>=3.8.5
