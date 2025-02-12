@@ -172,7 +172,7 @@ class KnowledgeManager:
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 conn.execute(
                     "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (point_id, text, source_type, pickle.dumps(embedding))
+                    (point_id, text, source_type, pickle.dumps(embedding)))
         except Exception as e:
             logging.error(f"Add knowledge error: {str(e)}")
 
