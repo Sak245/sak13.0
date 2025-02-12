@@ -244,4 +244,4 @@ with st.expander("🔍 Research Assistant"):
 
 # Requirements
 st.sidebar.markdown("""
-**Required Packages:**
+**Required Packages:**)
