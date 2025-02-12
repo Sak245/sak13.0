@@ -1,3 +1,7 @@
+# Add this at the top of your file:
+import torch
+torch.set_default_dtype(torch.float32)
+
 import warnings
 import sys
 import os
@@ -10,6 +14,7 @@ from groq import Groq
 import uuid
 from typing import TypedDict
 from duckduckgo_search import DDGS
+# Replace the pipeline import with:
 from transformers import pipeline
 import sqlite3
 import pickle
