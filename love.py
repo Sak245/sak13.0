@@ -1,5 +1,4 @@
 import warnings
-import sys
 import os
 import tempfile
 import streamlit as st
@@ -18,14 +17,14 @@ from functools import lru_cache
 import time
 from pathlib import Path
 import logging
+import torch
 
 # Suppress warnings and configure environment
 warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-# Initialize Torch first
-import torch
-torch._C._set_default_dtype(torch.float32)
+# Initialize Torch first to prevent Streamlit watcher issues
+torch.set_default_dtype(torch.float32)
 
 # =====================
 # 🛠️ Configuration Setup
@@ -44,10 +43,10 @@ class Config:
         self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
-        self.device = "cpu"
+        self.device = "cpu"  # Force CPU for Streamlit compatibility
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
-        self.rate_limit = 50
+        self.rate_limit = 50  # Requests per hour
 
 config = Config()
 
@@ -66,7 +65,7 @@ with st.sidebar:
     st.write(f"**Storage Location:** {config.storage_path}")
 
 if not groq_key:
-    st.error("Please provide the Groq API key to proceed.")
+    st.error("Please provide the Groq API key in the sidebar to proceed.")
     st.stop()
 
 # =====================
@@ -74,69 +73,86 @@ if not groq_key:
 # =====================
 class KnowledgeManager:
     def __init__(self):
-        self.client = QdrantClient(
-            path=str(config.qdrant_path),
-            prefer_grpc=False
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name=config.embedding_model,
+            model_kwargs={'device': config.device},
+            encode_kwargs={'normalize_embeddings': True}
         )
         
-        try:
-            self.client.get_collection("lovebot_knowledge")
-        except Exception:
-            self.client.recreate_collection(
-                collection_name="lovebot_knowledge",
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE)
-            )
-
+        self.client = QdrantClient(
+            path=str(config.qdrant_path),
+            prefer_grpc=False  # Disable GRPC for Streamlit compatibility
+        )
+        
+        self._init_collection()
         self._init_sqlite()
 
-    def _init_sqlite(self):
-        with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS knowledge_entries (
-                    id TEXT PRIMARY KEY,
-                    text TEXT,
-                    source_type TEXT,
-                    vector BLOB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    def _init_collection(self):
+        try:
+            if not self.client.collection_exists("lovebot_knowledge"):
+                self.client.create_collection(
+                    collection_name="lovebot_knowledge",
+                    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                 )
-            """)
+        except Exception as e:
+            logging.error(f"Collection initialization error: {str(e)}")
+            st.error("Failed to initialize knowledge base")
+
+    def _init_sqlite(self):
+        try:
+            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS knowledge_entries (
+                        id TEXT PRIMARY KEY,
+                        text TEXT,
+                        source_type TEXT,
+                        vector BLOB,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+        except Exception as e:
+            logging.error(f"Database initialization error: {str(e)}")
+            st.error("Failed to initialize database")
 
     def add_knowledge(self, text: str, source_type: str):
         try:
-            embedding = HuggingFaceEmbeddings().embed_query(text)
+            embedding = self.embeddings.embed_query(text)
             point_id = str(uuid.uuid4())
             
+            # Qdrant storage
             self.client.upsert(
                 collection_name="lovebot_knowledge",
                 points=[PointStruct(
                     id=point_id,
-                    vector=embedding,
-                    payload={"text": text}
+                    vector=embedding.tolist(),  # Convert to list for Qdrant
+                    payload={"text": text, "type": source_type}
                 )]
             )
             
+            # SQLite storage
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 conn.execute(
                     "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                     (point_id, text, source_type, pickle.dumps(embedding))
-                )
+                
         except Exception as e:
             logging.error(f"Knowledge addition error: {str(e)}")
-            st.error("Failed to add knowledge")
+            st.error("Failed to add knowledge entry")
 
     def search_knowledge(self, query: str, limit=3):
         try:
-            embedding = HuggingFaceEmbeddings().embed_query(query)
+            embedding = self.embeddings.embed_query(query)
             results = self.client.search(
                 collection_name="lovebot_knowledge",
-                query_vector=embedding,
+                query_vector=embedding.tolist(),  # Convert to list
                 limit=limit,
-                with_payload=True
+                with_payload=True,
+                score_threshold=0.4  # Filter low-quality matches
             )
-            return [r.payload["text"] for r in results]
+            return [r.payload.get("text", "") for r in results if r.payload]
         except Exception as e:
-            logging.error(f"Search error: {str(e)}")
-            return []
+            logging.error(f"Knowledge search error: {str(e)}")
+            return ["Knowledge base currently unavailable"]
 
 # =====================
 # 🔍 Search Management
@@ -157,50 +173,174 @@ class SearchManager:
 class AIService:
     def __init__(self):
         self.groq_client = Groq(api_key=groq_key)
-        self.safety_checker = pipeline("text-classification", model=config.safety_model)
+        self.safety_checker = pipeline(
+            "text-classification", 
+            model=config.safety_model,
+            device=-1  # Force CPU
+        )
         self.searcher = SearchManager()
-        self.rate_limits = {}
+        self.rate_limits = defaultdict(list)
+
+    def check_rate_limit(self, user_id: str):
+        current_time = time.time()
+        # Cleanup old requests
+        self.rate_limits[user_id] = [t for t in self.rate_limits[user_id] if current_time - t < 3600]
+        if len(self.rate_limits[user_id]) >= config.rate_limit:
+            return False
+        self.rate_limits[user_id].append(current_time)
+        return True
 
     def generate_response(self, prompt: str, context: str, user_id: str):
-        if self.rate_limits.get(user_id, 0) >= config.rate_limit:
-            return "Rate limit exceeded"
+        if not self.check_rate_limit(user_id):
+            return "⏳ Rate limit exceeded. Please try again later."
         
         try:
             response = self.groq_client.chat.completions.create(
                 model="mixtral-8x7b-32768",
-                messages=[
-                    {"role": "system", "content": f"Context:\n{context}\nRespond as a relationship expert."},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=[{
+                    "role": "system",
+                    "content": f"Context:\n{context}\nRespond as a compassionate relationship expert."
+                }, {
+                    "role": "user",
+                    "content": prompt
+                }],
                 temperature=0.7,
                 max_tokens=500
             )
             
             output = response.choices[0].message.content
-            self.rate_limits[user_id] = self.rate_limits.get(user_id, 0) + 1
-            return output if "harm" not in output.lower() else "Content blocked"
-        
+            return output if self._is_safe(output) else "🚫 Content blocked by safety filters"
+            
         except Exception as e:
-            logging.error(f"Error: {str(e)}")
-            return "I'm having trouble responding"
+            logging.error(f"Generation error: {str(e)}")
+            return "⚠️ I'm having trouble responding right now. Please try again."
+
+    def _is_safe(self, text: str):
+        try:
+            result = self.safety_checker(text[:512])[0]
+            return result["label"] != "LABEL_1" and result["score"] < 0.85
+        except Exception as e:
+            logging.error(f"Safety check error: {str(e)}")
+            return False
+
+# =====================
+# 🤖 Workflow Management
+# =====================
+class BotState(TypedDict):
+    messages: list[str]
+    knowledge_context: str
+    web_context: str
+    user_id: str
+
+class WorkflowManager:
+    def __init__(self):
+        self.knowledge = KnowledgeManager()
+        self.ai = AIService()
+        self.workflow = self._build_workflow()
+
+    def _build_workflow(self):
+        workflow = StateGraph(BotState)
+        
+        workflow.add_node("retrieve_knowledge", self.retrieve_knowledge)
+        workflow.add_node("retrieve_web", self.retrieve_web)
+        workflow.add_node("generate", self.generate_response)
+        
+        workflow.set_entry_point("retrieve_knowledge")
+        workflow.add_edge("retrieve_knowledge", "retrieve_web")
+        workflow.add_edge("retrieve_web", "generate_response")
+        workflow.add_edge("generate_response", END)
+        
+        return workflow.compile()
+
+    def retrieve_knowledge(self, state: BotState):
+        try:
+            query = state["messages"][-1]
+            return {"knowledge_context": "\n".join(self.knowledge.search_knowledge(query))}
+        except Exception as e:
+            logging.error(f"Knowledge retrieval error: {str(e)}")
+            return {"knowledge_context": "No relevant knowledge found"}
+
+    def retrieve_web(self, state: BotState):
+        try:
+            results = self.ai.searcher.cached_search(state["messages"][-1])
+            return {"web_context": "\n".join(f"• {r['body']}" for r in results)}
+        except Exception as e:
+            logging.error(f"Web retrieval error: {str(e)}")
+            return {"web_context": "No web results found"}
+
+    def generate_response(self, state: BotState):
+        full_context = f"""
+        KNOWLEDGE BASE:\n{state['knowledge_context']}
+        WEB CONTEXT:\n{state['web_context']}
+        """
+        return {"response": self.ai.generate_response(
+            prompt=state["messages"][-1],
+            context=full_context,
+            user_id=state["user_id"]
+        )}
 
 # =====================
 # 💻 Streamlit Interface
 # =====================
-workflow = KnowledgeManager()
+workflow_manager = WorkflowManager()
+
+# Initialize session state
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-st.title("💖 LoveBot: Relationship Expert")
+st.title("💖 LoveBot: AI Relationship Assistant")
+st.write("Ask anything about love, relationships, and dating!")
 
+# Display chat history
 for role, text in st.session_state.messages:
-    with st.chat_message(role, avatar="💬" if role == "user" else "💖"):
+    avatar = "💬" if role == "user" else "💖"
+    with st.chat_message(role, avatar=avatar):
         st.write(text)
 
-if prompt := st.chat_input("Ask about relationships..."):
+# Handle user input
+if prompt := st.chat_input("Type your message..."):
+    # Add user message to history
     st.session_state.messages.append(("user", prompt))
-    response = workflow.search_knowledge(prompt)
-    st.session_state.messages.append(("assistant", response))
+    
+    # Process through workflow
+    result = workflow_manager.workflow.invoke({
+        "messages": [prompt],
+        "knowledge_context": "",
+        "web_context": "",
+        "user_id": st.session_state.user_id
+    })
+    
+    # Add AI response to history
+    if response := result.get("response"):
+        st.session_state.messages.append(("assistant", response))
+    
+    # Refresh the display
     st.rerun()
+
+# Additional features
+with st.expander("📖 Story Assistance"):
+    story_prompt = st.text_area("Start your relationship story:")
+    if st.button("Continue Story"):
+        response = workflow_manager.ai.generate_response(
+            prompt=f"Continue this story positively: {story_prompt}",
+            context="",
+            user_id=st.session_state.user_id
+        )
+        st.write(response)
+
+with st.expander("🔍 Research Assistant"):
+    research_query = st.text_input("Enter research topic:")
+    if st.button("Learn About This"):
+        with st.spinner("Researching..."):
+            try:
+                results = workflow_manager.ai.searcher.cached_search(research_query)
+                for result in results:
+                    workflow_manager.knowledge.add_knowledge(
+                        f"{result['title']}: {result['body']}",
+                        "web_research"
+                    )
+                st.success(f"Added {len(results)} entries about {research_query}")
+            except Exception as e:
+                st.error("Research failed. Please try again later.")
