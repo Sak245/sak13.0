@@ -8,7 +8,17 @@ import uuid
 from typing import TypedDict
 from duckduckgo_search import DDGS
 from transformers import pipeline
+import sqlite3
+import pickle
+from functools import lru_cache
+from collections import defaultdict
+import time
+from pathlib import Path
 import re
+import logging
+
+# Configure logging
+logging.basicConfig(filename='app.log', level=logging.ERROR)
 
 # =====================
 # 🔑 User Configuration
@@ -25,15 +35,22 @@ if not groq_key:
     st.stop()
 
 # =====================
-# 📚 Enhanced Knowledge Base (Qdrant)
+# 📚 Enhanced Knowledge Base
 # =====================
-class KnowledgeBase:
-    def __init__(self):
-        self.client = QdrantClient(":memory:")
+class KnowledgeManager:
+    def __init__(self, storage_dir="./storage"):
+        self.storage_dir = Path(storage_dir)
+        self.storage_dir.mkdir(exist_ok=True)
+        
         self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        self.client = QdrantClient(":memory:")
         self.collection_name = "lovebot_knowledge"
         
-        # Initialize or reset collection
+        self._init_vector_db()
+        self._init_sqlite()
+        self._load_persistent_data()
+
+    def _init_vector_db(self):
         if self.client.collection_exists(self.collection_name):
             self.client.delete_collection(self.collection_name)
             
@@ -41,57 +58,58 @@ class KnowledgeBase:
             collection_name=self.collection_name,
             vectors_config=VectorParams(size=384, distance=Distance.COSINE),
         )
-        
-        # Initialize with book summaries
-        self.initialize_with_books()
 
-    def initialize_with_books(self):
-        """Initialize with relationship book summaries"""
-        books = [
-            ("Nonviolent Communication", "Marshall B. Rosenberg"),
-            ("The Seven Principles for Making Marriage Work", "John Gottman"),
-            ("Attached", "Amir Levine")
-        ]
-        
-        for title, author in books:
-            summary = self.get_book_summary(title, author)
-            if summary:
-                self._add_to_collection(summary, "book_summary")
+    def _init_sqlite(self):
+        with sqlite3.connect(self.storage_dir / "knowledge.db") as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS knowledge_entries (
+                    id TEXT PRIMARY KEY,
+                    text TEXT,
+                    source_type TEXT,
+                    vector BLOB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
-    def get_book_summary(self, title: str, author: str) -> str:
-        """Fetch book summary from web"""
+    def _load_persistent_data(self):
+        with sqlite3.connect(self.storage_dir / "knowledge.db") as conn:
+            rows = conn.execute("SELECT id, text, vector FROM knowledge_entries").fetchall()
+            for id_, text, vector_blob in rows:
+                self.client.upsert(
+                    collection_name=self.collection_name,
+                    points=[PointStruct(
+                        id=id_,
+                        vector=pickle.loads(vector_blob),
+                        payload={"text": text}
+                    )]
+                )
+
+    def add_knowledge(self, text: str, source_type: str):
         try:
-            with DDGS() as ddgs:
-                results = ddgs.text(f"{title} by {author} summary", max_results=1)
-                if results:
-                    return f"{title} by {author}: {results[0]['body']}"
+            embedding = self.embeddings.embed_query(text)
+            point_id = str(uuid.uuid4())
+            
+            # Add to vector DB
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=[PointStruct(
+                    id=point_id,
+                    vector=embedding,
+                    payload={"text": text, "type": source_type}
+                )]
+            )
+            
+            # Add to SQLite
+            with sqlite3.connect(self.storage_dir / "knowledge.db") as conn:
+                conn.execute(
+                    "INSERT INTO knowledge_entries (id, text, source_type, vector) VALUES (?, ?, ?, ?)",
+                    (point_id, text, source_type, pickle.dumps(embedding))
+                )
         except Exception as e:
-            st.error(f"Error fetching {title} summary: {str(e)}")
-        return ""
+            logging.error(f"Error adding knowledge: {str(e)}")
+            st.error("Failed to add knowledge to database")
 
-    def _add_to_collection(self, text: str, source_type: str):
-        """Helper to add documents to collection"""
-        embedding = self.embeddings.embed_query(text)
-        point = PointStruct(
-            id=str(uuid.uuid4()),
-            vector=embedding,
-            payload={"text": text, "type": source_type}
-        )
-        self.client.upsert(collection_name=self.collection_name, points=[point])
-
-    def add_from_web(self, query: str):
-        """Add web results to knowledge base"""
-        try:
-            with DDGS() as ddgs:
-                results = ddgs.text(query, max_results=3)
-            for result in results:
-                text = f"{result['title']}: {result['body']}"
-                self._add_to_collection(text, "web_result")
-        except Exception as e:
-            st.error(f"Web search error: {str(e)}")
-
-    def search(self, query: str, limit: int = 3):
-        """Search knowledge base with safety checks"""
+    def search_knowledge(self, query: str, limit=3):
         try:
             embedding = self.embeddings.embed_query(query)
             results = self.client.search(
@@ -102,116 +120,139 @@ class KnowledgeBase:
             )
             return [r.payload["text"] for r in results if "text" in r.payload]
         except Exception as e:
-            st.error(f"Search error: {str(e)}")
+            logging.error(f"Search error: {str(e)}")
             return []
 
-kb = KnowledgeBase()
-
 # =====================
-# 🧠 Enhanced AI Core
+# 🧠 AI Core Components
 # =====================
-class LoveBot:
+class AIService:
     def __init__(self):
-        self.client = Groq(api_key=groq_key)
+        self.groq_client = Groq(api_key=groq_key)
         self.safety_checker = pipeline(
             "text-classification", 
             model="Hate-speech-CNERG/dehatebert-mono-english"
         )
+        self.rate_limiter = defaultdict(list)
+        self.RATE_LIMIT = 50  # Requests per hour
 
-    def generate_response(self, prompt: str, context: str):
-        """Generate safe response with context"""
-        messages = [
-            {"role": "system", "content": f"Context:\n{context}\n\nRespond helpfully as a relationship expert."},
-            {"role": "user", "content": prompt}
-        ]
+    def generate_response(self, prompt: str, context: str, user_id: str):
+        if not self._check_rate_limit(user_id):
+            return "Rate limit exceeded. Please try again later."
         
         try:
-            response = self.client.chat.completions.create(
+            response = self.groq_client.chat.completions.create(
                 model="mixtral-8x7b-32768",
-                messages=messages,
+                messages=[{
+                    "role": "system",
+                    "content": f"Context:\n{context}\nRespond as a relationship expert."
+                }, {
+                    "role": "user",
+                    "content": prompt
+                }],
                 temperature=0.7,
                 max_tokens=500
             )
-            output = response.choices[0].message.content
             
-            if not self._is_safe(output):
-                return "I cannot provide advice on that topic."
-                
-            return output
+            output = response.choices[0].message.content
+            return output if self._is_safe(output) else "I cannot provide advice on that topic."
             
         except Exception as e:
-            st.error(f"Generation error: {str(e)}")
+            logging.error(f"Generation error: {str(e)}")
             return "I'm having trouble responding right now."
 
-    def _is_safe(self, text: str) -> bool:
-        """Safety check using DeHateBERT"""
+    def _is_safe(self, text: str):
         try:
             result = self.safety_checker(text[:512])[0]
             return result["label"] != "LABEL_1" or result["score"] < 0.85
         except Exception as e:
-            st.error(f"Safety check error: {str(e)}")
+            logging.error(f"Safety check error: {str(e)}")
             return "harm" not in text.lower()
 
-bot = LoveBot()
+    def _check_rate_limit(self, user_id: str):
+        current_time = time.time()
+        self.rate_limiter[user_id] = [
+            t for t in self.rate_limiter[user_id] 
+            if current_time - t < 3600
+        ]
+        if len(self.rate_limiter[user_id]) >= self.RATE_LIMIT:
+            return False
+        self.rate_limiter[user_id].append(current_time)
+        return True
 
 # =====================
-# 🤖 Enhanced Workflow
+# 🤖 Application Workflow
 # =====================
 class BotState(TypedDict):
     messages: list[str]
     knowledge_context: str
     web_context: str
+    user_id: str
 
-def retrieve_knowledge(state: BotState):
-    """Retrieve from knowledge base"""
-    try:
-        query = state["messages"][-1]
-        return {"knowledge_context": "\n".join(kb.search(query))}
-    except Exception as e:
-        st.error(f"Knowledge retrieval error: {str(e)}")
-        return {"knowledge_context": ""}
-
-def retrieve_web(state: BotState):
-    """Retrieve fresh web context"""
-    try:
-        with DDGS() as ddgs:
-            results = ddgs.text(state["messages"][-1], max_results=2)
-        return {"web_context": "\n".join(f"• {r['body']}" for r in results)}
-    except Exception as e:
-        st.error(f"Web retrieval error: {str(e)}")
-        return {"web_context": ""}
-
-def generate_response(state: BotState):
-    """Generate final response"""
-    full_context = f"""
-    KNOWLEDGE BASE CONTEXT:
-    {state['knowledge_context']}
+def create_workflow():
+    workflow = StateGraph(BotState)
     
-    WEB CONTEXT:
-    {state['web_context']}
-    """
-    return {"response": bot.generate_response(state["messages"][-1], full_context)}
+    def retrieve_knowledge(state: BotState):
+        try:
+            query = state["messages"][-1]
+            return {"knowledge_context": "\n".join(knowledge_manager.search_knowledge(query))}
+        except Exception as e:
+            logging.error(f"Knowledge retrieval error: {str(e)}")
+            return {"knowledge_context": ""}
 
-workflow = StateGraph(BotState)
-workflow.add_node("retrieve_knowledge", retrieve_knowledge)
-workflow.add_node("retrieve_web", retrieve_web)
-workflow.add_node("generate", generate_response)
+    def retrieve_web(state: BotState):
+        try:
+            with DDGS() as ddgs:
+                results = ddgs.text(state["messages"][-1], max_results=2)
+            return {"web_context": "\n".join(f"• {r['body']}" for r in results)}
+        except Exception as e:
+            logging.error(f"Web retrieval error: {str(e)}")
+            return {"web_context": ""}
 
-workflow.set_entry_point("retrieve_knowledge")
-workflow.add_edge("retrieve_knowledge", "retrieve_web")
-workflow.add_edge("retrieve_web", "generate")
-workflow.add_edge("generate", END)
+    def generate_response(state: BotState):
+        full_context = f"""
+        KNOWLEDGE BASE:\n{state['knowledge_context']}
+        WEB CONTEXT:\n{state['web_context']}
+        """
+        response = ai_service.generate_response(
+            prompt=state["messages"][-1],
+            context=full_context,
+            user_id=state["user_id"]
+        )
+        return {"response": response}
 
-app = workflow.compile()
+    workflow.add_node("retrieve_knowledge", retrieve_knowledge)
+    workflow.add_node("retrieve_web", retrieve_web)
+    workflow.add_node("generate", generate_response)
+
+    workflow.set_entry_point("retrieve_knowledge")
+    workflow.add_edge("retrieve_knowledge", "retrieve_web")
+    workflow.add_edge("retrieve_web", "generate")
+    workflow.add_edge("generate", END)
+
+    return workflow.compile()
 
 # =====================
-# 💖 Streamlit UI
+# 💻 Streamlit Interface
 # =====================
-st.title("💞 LoveBot - Relationship Expert")
+knowledge_manager = KnowledgeManager()
+ai_service = AIService()
+workflow_app = create_workflow()
 
-# Chat Interface
+# Initialize session state
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+# Sidebar Controls
+with st.sidebar:
+    st.header("📊 System Status")
+    remaining_calls = ai_service.RATE_LIMIT - len(ai_service.rate_limiter.get(st.session_state.user_id, []))
+    st.metric("Remaining Requests", remaining_calls)
+
+# Main Chat Interface
+st.title("💞 LoveBot - Relationship Expert")
 
 for msg in st.session_state.messages:
     role_icon = "💬" if msg["role"] == "user" else "💖"
@@ -220,10 +261,11 @@ for msg in st.session_state.messages:
 if prompt := st.chat_input("Ask about relationships..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    result = app.invoke({
+    result = workflow_app.invoke({
         "messages": [prompt],
         "knowledge_context": "",
-        "web_context": ""
+        "web_context": "",
+        "user_id": st.session_state.user_id
     })
     
     if response := result.get("response"):
@@ -231,17 +273,32 @@ if prompt := st.chat_input("Ask about relationships..."):
     st.rerun()
 
 # Additional Features
-with st.expander("📖 Story Completion"):
-    story_input = st.text_area("Start a relationship story:")
+with st.expander("📖 Story Assistance"):
+    story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
-        st.write(bot.generate_response(f"Continue this story positively: {story_input}", ""))
+        response = ai_service.generate_response(
+            prompt=f"Continue this story positively: {story_prompt}",
+            context="",
+            user_id=st.session_state.user_id
+        )
+        st.write(response)
 
 with st.expander("🔍 Research Assistant"):
-    research_query = st.text_input("Research topic:")
-    if st.button("Learn & Store"):
-        kb.add_from_web(research_query)
-        st.success(f"Learned about {research_query}!")
+    research_query = st.text_input("Enter research topic:")
+    if st.button("Learn About This"):
+        with st.spinner("Researching..."):
+            try:
+                with DDGS() as ddgs:
+                    results = ddgs.text(research_query, max_results=3)
+                for result in results:
+                    knowledge_manager.add_knowledge(
+                        f"{result['title']}: {result['body']}",
+                        "web_research"
+                    )
+                st.success(f"Added {len(results)} entries about {research_query}")
+            except Exception as e:
+                st.error("Failed to complete research")
 
 # Requirements
 st.sidebar.markdown("""
-**Required Packages:**)
+**Required Packages:**
