@@ -77,12 +77,12 @@ class KnowledgeBase:
     def search(self, query: str):
         """Search vector store for relevant context."""
         embedding = self.embeddings.embed_query(query)
-        results = self.client.search(  # ✅ FIXED METHOD NAME
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=embedding,
-            limit=3
+            vector=embedding,
+            limit=3,
         )
-        return [result.payload["text"] for result in results if "text" in result.payload]
+        return [result.payload["text"] for result in results]
 
 kb = KnowledgeBase()
 kb.initialize()
@@ -101,16 +101,21 @@ class LoveBot:
             {"role": "user", "content": prompt}
         ]
         
-        response = self.client.chat.completions.create(
-            messages=messages,
-            model="mixtral-8x7b-32768",
-            temperature=0.7,
-            max_tokens=500
-        )
+        try:
+            response = self.client.chat.completions.create(
+                messages=messages,
+                model="mixtral-8x7b-32768",
+                temperature=0.7,
+                max_tokens=500
+            )
+            
+            if response.choices:
+                return response.choices[0].message.content
+            
+        except Exception as e:
+            st.error(f"Error generating response: {e}")
         
-        if response.choices:
-            return response.choices[0].message.content
-        return "Sorry, I couldn't generate a response."
+        return "[No response generated]"
 
 bot = LoveBot()
 
@@ -175,7 +180,7 @@ if prompt := st.chat_input("Ask about relationships..."):
         "context": ""
     })
     
-    # ✅ FIXED ERROR: Ensure 'response' key exists in result
+    # Ensure 'response' key exists in result
     response = result.get("response", "[No response generated]")
     
     st.session_state.messages.append({"role": "assistant", "content": response})
