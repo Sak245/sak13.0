@@ -149,6 +149,8 @@ workflow.set_entry_point("retrieve_context")
 workflow.add_edge("retrieve_context", "generate_response")
 workflow.add_edge("generate_response", END)
 
+app = workflow.compile()  # Compile the workflow
+
 # =====================
 # 💖 Streamlit UI
 # =====================
@@ -164,9 +166,8 @@ for msg in st.session_state.messages:
 if prompt := st.chat_input("Ask about relationships..."):
     # Add user message to history
     st.session_state.messages.append({"role": "user", "content": prompt})
-
-    workflow = workflow.compile()
-    result = workflow.invoke({
+    
+    result = app.invoke({
         "messages": [prompt],
         "context": ""
     })
