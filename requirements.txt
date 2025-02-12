@@ -1,6 +1,11 @@
-streamlit>=1.28
-langchain-chroma
-sentence-transformers
+streamlit
+langgraph
+langchain
+langchain_community
 groq
-tavily-python
-python-dotenv
+tavily
+chromadb
+huggingface_hub
+torch
+transformers
+sentence-transformers
