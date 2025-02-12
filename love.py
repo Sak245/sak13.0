@@ -2,6 +2,8 @@ import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=SyntaxWarning)
 
+import sys
+import subprocess
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
@@ -21,6 +23,14 @@ from pathlib import Path
 import re
 import logging
 import torch
+
+# Validate CUDA environment
+if not torch.cuda.is_available():
+    st.error("""
+    CUDA not available! Required for GPU acceleration.
+    Check NVIDIA drivers and CUDA installation.
+    """)
+    sys.exit(1)
 
 # Configure logging
 logging.basicConfig(filename='app.log', level=logging.ERROR)
@@ -48,9 +58,15 @@ class KnowledgeManager:
         self.storage_dir.mkdir(exist_ok=True)
         
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2"
+            model_name="sentence-transformers/all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cuda'},
+            encode_kwargs={'normalize_embeddings': True}
         )
-        self.client = QdrantClient(":memory:")
+        self.client = QdrantClient(
+            ":memory:",
+            prefer_grpc=True,
+            timeout=30
+        )
         self.collection_name = "lovebot_knowledge"
         
         self._init_vector_db()
@@ -140,7 +156,8 @@ class AIService:
         self.safety_checker = pipeline(
             "text-classification", 
             model="Hate-speech-CNERG/dehatebert-mono-english",
-            device=0 if torch.cuda.is_available() else -1
+            device=0,
+            torch_dtype=torch.float16
         )
         self.rate_limiter = defaultdict(list)
         self.RATE_LIMIT = 50  # Requests per hour
@@ -259,10 +276,9 @@ with st.sidebar:
     st.header("📊 System Status")
     remaining_calls = ai_service.RATE_LIMIT - len(ai_service.rate_limiter.get(st.session_state.user_id, []))
     st.metric("Remaining Requests", remaining_calls)
-    if torch.cuda.is_available():
-        st.success(f"GPU Accelerated (CUDA {torch.version.cuda})")
-    else:
-        st.warning("Using CPU - For better performance enable CUDA")
+    st.success(f"GPU Active: {torch.cuda.get_device_name(0)}")
+    st.metric("CUDA Version", torch.version.cuda)
+    st.metric("PyTorch Version", torch.__version__)
 
 # Main Chat Interface
 st.title("💞 LoveBot - Relationship Expert")
