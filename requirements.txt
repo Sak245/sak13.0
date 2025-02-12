@@ -3,7 +3,7 @@ langchain-community
 transformers
 sentence-transformers
 torch
-chromadb==0.4.22
+chromadb
 groq
 streamlit
 requests
