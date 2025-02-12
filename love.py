@@ -1,10 +1,11 @@
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import VectorParams, Distance, PayloadSchemaType
+from qdrant_client.http.models import VectorParams, Distance
 from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import requests
+from typing import TypedDict
 
 # =====================
 # 🔑 User Configuration
@@ -49,7 +50,7 @@ class KnowledgeBase:
                 collection_name=self.collection_name,
                 points=[
                     {
-                        "id": summary["text"],
+                        "id": hash(summary["text"]),  # ✅ Ensure ID is an integer
                         "vector": embedding,
                         "payload": {"text": summary["text"]},
                     }
@@ -58,9 +59,10 @@ class KnowledgeBase:
 
     def add_from_web(self, query: str):
         """Scrape web content using DuckDuckGo and add to vector store."""
-        response = requests.get(f"https://api.duckduckgo.com/?q={query}&format=json")
-        
-        if response.status_code == 200:
+        try:
+            response = requests.get(f"https://api.duckduckgo.com/?q={query}&format=json")
+            response.raise_for_status()  # Raise error if request fails
+
             results = response.json().get("RelatedTopics", [])
             for result in results:
                 if "Text" in result:
@@ -69,14 +71,14 @@ class KnowledgeBase:
                         collection_name=self.collection_name,
                         points=[
                             {
-                                "id": result["Text"],
+                                "id": hash(result["Text"]),  # ✅ Ensure ID is an integer
                                 "vector": embedding,
                                 "payload": {"text": result["Text"], "url": result.get("FirstURL")},
                             }
                         ],
                     )
-        else:
-            st.error("Failed to fetch web results. Please check your DuckDuckGo API key.")
+        except requests.RequestException as e:
+            st.error(f"Failed to fetch web results: {e}")
 
     def search(self, query: str):
         """Search vector store for relevant context."""
@@ -181,7 +183,7 @@ if prompt := st.chat_input("Ask about relationships..."):
     
     response = result["response"]
     st.session_state.messages.append({"role": "assistant", "content": response})
-    
+
 st.divider()
 
 with st.expander("📖 Story Completion"):
