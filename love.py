@@ -164,8 +164,9 @@ for msg in st.session_state.messages:
 if prompt := st.chat_input("Ask about relationships..."):
     # Add user message to history
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    result = workflow.run({
+
+    workflow = workflow.compile()
+    result = workflow.invoke({
         "messages": [prompt],
         "context": ""
     })
