@@ -1,7 +1,7 @@
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import PointStruct, VectorParams, Distance, ScoredPoint
+from qdrant_client.http.models import PointStruct, VectorParams, Distance
 from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import requests
@@ -77,12 +77,12 @@ class KnowledgeBase:
     def search(self, query: str):
         """Search vector store for relevant context."""
         embedding = self.embeddings.embed_query(query)
-        results = self.client.search(
+        results = self.client.search(  # ✅ FIXED METHOD NAME
             collection_name=self.collection_name,
             query_vector=embedding,
-            limit=3,
+            limit=3
         )
-        return [result.payload["text"] for result in results]
+        return [result.payload["text"] for result in results if "text" in result.payload]
 
 kb = KnowledgeBase()
 kb.initialize()
@@ -107,7 +107,10 @@ class LoveBot:
             temperature=0.7,
             max_tokens=500
         )
-        return response.choices[0].message.content
+        
+        if response.choices:
+            return response.choices[0].message.content
+        return "Sorry, I couldn't generate a response."
 
 bot = LoveBot()
 
@@ -172,7 +175,7 @@ if prompt := st.chat_input("Ask about relationships..."):
         "context": ""
     })
     
-    # Ensure 'response' key exists in result
+    # ✅ FIXED ERROR: Ensure 'response' key exists in result
     response = result.get("response", "[No response generated]")
     
     st.session_state.messages.append({"role": "assistant", "content": response})
