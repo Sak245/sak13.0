@@ -11,4 +11,5 @@ sentence-transformers==3.0.1
 typing_extensions==4.12.2
 langchain-huggingface==0.0.4
 python-dotenv==1.0.1
+accelerate==0.29.3
 uv==0.1.45
