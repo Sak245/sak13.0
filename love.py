@@ -299,6 +299,3 @@ with st.expander("🔍 Research Assistant"):
             except Exception as e:
                 st.error("Failed to complete research")
 
-# Requirements
-st.sidebar.markdown("""
-**Required Packages:**
