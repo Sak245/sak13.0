@@ -70,17 +70,20 @@ class KnowledgeBase:
             )
             self.client.upsert(collection_name=self.collection_name, points=[point])
 
-    def search(self, query: str):
-        """Search the knowledge base for relevant context."""
-        embedding = self.embeddings.embed_query(query)
-        results = self.client.query_points(
-            collection_name=self.collection_name,
-            query_vectors=[embedding],
-            limit=3,
-            with_payload=True,
-        )
-        
-        return [r.payload["text"] for r in results if "text" in r.payload]
+def search(self, query: str):
+    """Search vector store for relevant context."""
+    embedding = self.embeddings.embed_query(query)
+    
+    results = self.client.search(  # ✅ Corrected function call
+        collection_name=self.collection_name,
+        query_vector=embedding,
+        limit=3,
+        with_payload=True
+    )
+
+    # Ensure results contain valid payloads
+    return [result.payload["text"] for result in results if "text" in result.payload]
+
 
 kb = KnowledgeBase()
 kb.initialize()
