@@ -5,8 +5,8 @@ langchain-community
 groq
 duckduckgo-search
 transformers
+torch
 sentence-transformers
 langchain-huggingface
 python-dotenv
-torch
 accelerate
