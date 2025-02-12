@@ -26,6 +26,13 @@ warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_default_dtype(torch.float32)
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
+
 # =====================
 # 🛠️ Configuration Setup
 # =====================
@@ -53,6 +60,13 @@ config = Config()
 # 🔐 Streamlit Configuration
 # =====================
 st.set_page_config(page_title="LoveBot", page_icon="💖", layout="wide")
+st.write("""
+<style>
+    [data-testid="stStatusWidget"] {
+        display: none;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("🔐 Configuration")
@@ -149,7 +163,8 @@ class KnowledgeManager:
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 conn.execute(
                     "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (point_id, text, source_type, pickle.dumps(embedding)))
+                    (point_id, text, source_type, pickle.dumps(embedding))
+                )
         except Exception as e:
             logging.error(f"Add knowledge error: {str(e)}")
 
@@ -357,3 +372,19 @@ with st.expander("🔍 Research Assistant"):
             except Exception as e:
                 st.error("Research failed. Please try again later.")
                 logging.error(traceback.format_exc())
+
+if __name__ == "__main__":
+    import sys
+    from streamlit.web import cli as stcli
+    
+    def main():
+        sys.argv = [
+            "streamlit", "run", sys.argv[0],
+            "--server.port=8501",
+            "--server.address=0.0.0.0",
+            "--server.headless=true",
+            "--server.fileWatcherType=none"
+        ]
+        sys.exit(stcli.main())
+        
+    main()
