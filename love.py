@@ -77,10 +77,11 @@ class KnowledgeBase:
     def search(self, query: str):
         """Search vector store for relevant context."""
         embedding = self.embeddings.embed_query(query)
-        results = self.client.query_points(
+        results = self.client.search(
             collection_name=self.collection_name,
-            vector=embedding,
+            query={"vector": embedding},
             limit=3,
+            with_payload=True,
         )
         return [result.payload["text"] for result in results]
 
@@ -201,4 +202,3 @@ with st.expander("🔍 Web Search & Vector Store"):
     
     if query_input:
         kb.add_from_web(query_input)
-        st.success(f"Added web results for '{query_input}' to the vector store!")
