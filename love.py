@@ -1,7 +1,7 @@
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import requests
 import os
@@ -26,7 +26,8 @@ if not groq_key:
 # =====================
 class KnowledgeBase:
     def __init__(self):
-        self.embeddings = HuggingFaceEmbeddings()
+        self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        self.persist_directory = "./vector_db"
         self.vector_store = None
 
     def initialize(self):
@@ -36,12 +37,15 @@ class KnowledgeBase:
             "Attached: Secure, Anxious, Avoidant attachment styles.",
             "Nonviolent Communication: Observations, feelings, needs."
         ]
-        self.vector_store = Chroma.from_texts(summaries, self.embeddings, persist_directory="./vector_db")
+        if not os.path.exists(self.persist_directory):
+            os.makedirs(self.persist_directory)
+            self.vector_store = Chroma.from_texts(summaries, self.embeddings, persist_directory=self.persist_directory)
+        else:
+            self.vector_store = Chroma(persist_directory=self.persist_directory, embedding_function=self.embeddings)
 
     def add_from_web(self, query: str):
         """Scrape web content using DuckDuckGo and add to vector store."""
-        headers = {"Authorization": f"Bearer {duckduckgo_key}"} if duckduckgo_key else {}
-        response = requests.get(f"https://api.duckduckgo.com/?q={query}&format=json", headers=headers)
+        response = requests.get(f"https://api.duckduckgo.com/?q={query}&format=json")
         
         if response.status_code == 200:
             results = response.json().get("RelatedTopics", [])
