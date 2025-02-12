@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 import logging
 import torch
+from collections import defaultdict  # Critical missing import
 
 # Suppress warnings and configure environment
 warnings.filterwarnings("ignore")
