@@ -242,19 +242,32 @@ class WorkflowManager:
         self.ai = AIService()
         self.workflow = self._build_workflow()
 
+# =====================
+# 🤖 Workflow Management (Fixed)
+# =====================
+class WorkflowManager:
+    def __init__(self):
+        self.knowledge = KnowledgeManager()
+        self.ai = AIService()
+        self.workflow = self._build_workflow()
+
     def _build_workflow(self):
         workflow = StateGraph(BotState)
         
+        # Define nodes with consistent names
         workflow.add_node("retrieve_knowledge", self.retrieve_knowledge)
         workflow.add_node("retrieve_web", self.retrieve_web)
-        workflow.add_node("generate", self.generate_response)
+        workflow.add_node("generate_response", self.generate_response)
         
+        # Set up proper connections
         workflow.set_entry_point("retrieve_knowledge")
         workflow.add_edge("retrieve_knowledge", "retrieve_web")
         workflow.add_edge("retrieve_web", "generate_response")
         workflow.add_edge("generate_response", END)
         
         return workflow.compile()
+
+    # Rest of the methods remain unchanged
 
     def retrieve_knowledge(self, state: BotState):
         try:
