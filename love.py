@@ -4,9 +4,9 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct, VectorParams, Distance
 from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
+from serpapi import GoogleSearch
 import uuid
 from typing import TypedDict
-from duckduckgo_search import DDGS
 
 # =====================
 # 🔑 User Configuration
@@ -16,10 +16,12 @@ st.set_page_config(page_title="LoveBot", page_icon="💖", layout="wide")
 with st.sidebar:
     st.header("🔐 Configuration")
     groq_key = st.text_input("Enter Groq API Key:", type="password")
+    serpapi_key = st.text_input("Enter SerpAPI Key:", type="password")
+    st.markdown("[Get SerpAPI Key](https://serpapi.com/)")
     st.markdown("[Get Groq Key](https://console.groq.com/keys)")
 
-if not groq_key:
-    st.error("Please provide the Groq API key in the sidebar to proceed.")
+if not groq_key or not serpapi_key:
+    st.error("Please provide API keys in the sidebar to proceed.")
     st.stop()
 
 # =====================
@@ -40,7 +42,6 @@ class KnowledgeBase:
         )
 
     def search(self, query: str):
-        """Search the knowledge base for relevant context."""
         embedding = self.embeddings.embed_query(query)
         results = self.client.search(
             collection_name=self.collection_name,
@@ -48,42 +49,23 @@ class KnowledgeBase:
             limit=3,
             with_payload=True,
         )
-        
-        return [
-            r.payload.get("text", "") 
-            for r in results 
-            if r.payload and r.payload.get("text")
-        ]
+        return [r.payload.get("text", "") for r in results if "text" in r.payload]
 
-
-    def add_from_web(self, query: str):
-        """Fetch search results using DuckDuckGo and store in vector DB."""
-        with DDGS() as ddgs:
-            results = ddgs.text(query, max_results=3)
-        
-        if not results:
-            st.error("No search results found.")
-            return
-        
-        for result in results:
-            text = result["title"] + " - " + result["body"]
-            embedding = self.embeddings.embed_query(text)
-            point = PointStruct(
-                id=str(uuid.uuid4()), vector=embedding, payload={"text": text, "url": result["href"]}
-            )
-            self.client.upsert(collection_name=self.collection_name, points=[point])
-
-    def search(self, query: str):
-        """Search the knowledge base for relevant context."""
-        embedding = self.embeddings.embed_query(query)
-        results = self.client.search(
-            collection_name=self.collection_name,
-            query_vector=embedding,
-            limit=3,
-            with_payload=True,
-        )
-        
-        return [r.payload["text"] for r in results if "text" in r.payload]
+    def add_book_summary(self, title: str, author: str):
+        query = f"{title} by {author} book summary"
+        params = {
+            "engine": "google",
+            "q": query,
+            "api_key": serpapi_key
+        }
+        search = GoogleSearch(params)
+        results = search.get_dict()
+        snippets = [r["snippet"] for r in results.get("organic_results", []) if "snippet" in r]
+        summary = " ".join(snippets)[:1000] if snippets else "Summary not found."
+        embedding = self.embeddings.embed_query(summary)
+        point = PointStruct(id=str(uuid.uuid4()), vector=embedding, payload={"text": summary})
+        self.client.upsert(collection_name=self.collection_name, points=[point])
+        return summary
 
 kb = KnowledgeBase()
 
@@ -95,12 +77,10 @@ class LoveBot:
         self.client = Groq(api_key=groq_key)
 
     def generate_response(self, prompt: str, context: str):
-        """Generate response using Groq."""
         messages = [
             {"role": "system", "content": f"CONTEXT: {context}"},
             {"role": "user", "content": prompt}
         ]
-        
         try:
             response = self.client.chat.completions.create(
                 model="mixtral-8x7b-32768",
@@ -108,23 +88,11 @@ class LoveBot:
                 temperature=0.7,
                 max_tokens=500
             )
-            
-            if response.choices:
-                return response.choices[0].message.content
-            
+            return response.choices[0].message.content if response.choices else "[No response generated]"
         except Exception as e:
-            st.error(f"Error generating response: {e}")
-        
-        return "[No response generated]"
+            return f"Error generating response: {e}"
 
 bot = LoveBot()
-
-# =====================
-# 🛡️ Safety System
-# =====================
-def safety_check(response: str) -> bool:
-    """Check if response violates safety rules."""
-    return not any(term.lower() in response.lower() for term in ["manipulate", "revenge", "harm"])
 
 # =====================
 # 💬 Chat Workflow
@@ -134,38 +102,20 @@ class BotState(TypedDict):
     context: str
 
 def retrieve_context(state: BotState):
-    try:
-        query = state["messages"][-1]
-    except (KeyError, IndexError):
-        return {"context": "[No query found]"}
-    
-    try:
-        docs = kb.search(query)
-    except Exception as e:
-        st.error(f"Search error: {e}")
-        return {"context": "[Search failed]"}
-    
+    query = state["messages"][-1] if state["messages"] else ""
+    docs = kb.search(query)
     return {"context": "\n".join(docs) if docs else "[No relevant context found]"}
 
 def generate_response(state: BotState):
-    prompt = state["messages"][-1]
-    context = state["context"]
-    
-    response = bot.generate_response(prompt, context)
-    
-    if not safety_check(response):
-        return {"response": "I cannot provide advice on that topic."}
-    
+    response = bot.generate_response(state["messages"][-1], state["context"])
     return {"response": response}
 
 workflow = StateGraph(BotState)
 workflow.add_node("retrieve_context", retrieve_context)
 workflow.add_node("generate_response", generate_response)
-
 workflow.set_entry_point("retrieve_context")
 workflow.add_edge("retrieve_context", "generate_response")
 workflow.add_edge("generate_response", END)
-
 app = workflow.compile()
 
 # =====================
@@ -182,29 +132,23 @@ for msg in st.session_state.messages:
 
 if prompt := st.chat_input("Ask about relationships..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
-    result = app.invoke({
-        "messages": [prompt],
-        "context": ""
-    })
-    
+    result = app.invoke({"messages": [prompt], "context": ""})
     response = result.get("response", "[No response generated]")
     st.session_state.messages.append({"role": "assistant", "content": response})
 
 st.divider()
 
-with st.expander("📖 Story Completion"):
-    story_input = st.text_area("Start your story:")
-    
-    if st.button("Complete Story"):
-        story_completion = bot.generate_response(f"Continue this story positively:\n{story_input}", "")
-        st.success(story_completion)
+with st.expander("📖 Book Summaries"):
+    title = st.text_input("Book Title:")
+    author = st.text_input("Author:")
+    if st.button("Fetch Summary"):
+        summary = kb.add_book_summary(title, author)
+        st.success(summary)
 
 st.divider()
 
 with st.expander("🔍 Web Search & Vector Store"):
-    query_input = st.text_input("Search the web for knowledge:")
-    
+    query_input = st.text_input("Search for knowledge:")
     if query_input and st.button("Search & Store"):
-        kb.add_from_web(query_input)
+        kb.add_book_summary(query_input, "")
         st.success("Knowledge stored successfully! 🔍")
