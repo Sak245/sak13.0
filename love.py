@@ -1,10 +1,10 @@
 import streamlit as st
 from langgraph.graph import StateGraph, END
-from langchain_community.vectorstores import Chroma
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import VectorParams, Distance, PayloadSchemaType
 from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import requests
-import os
 
 # =====================
 # 🔑 User Configuration
@@ -22,26 +22,39 @@ if not groq_key:
     st.stop()
 
 # =====================
-# 📚 Knowledge Base and Vector Store
+# 📚 Knowledge Base and Vector Store (Qdrant)
 # =====================
 class KnowledgeBase:
     def __init__(self):
+        self.client = QdrantClient(":memory:")  # In-memory for simplicity
         self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        self.persist_directory = "./vector_db"
-        self.vector_store = None
+
+        # Initialize collection for storing vectors
+        self.collection_name = "lovebot_knowledge"
+        self.client.recreate_collection(
+            collection_name=self.collection_name,
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+        )
 
     def initialize(self):
         """Initialize vector store with default summaries."""
         summaries = [
-            "5 Love Languages: Words, Acts, Gifts, Time, Touch.",
-            "Attached: Secure, Anxious, Avoidant attachment styles.",
-            "Nonviolent Communication: Observations, feelings, needs."
+            {"text": "5 Love Languages: Words, Acts, Gifts, Time, Touch."},
+            {"text": "Attached: Secure, Anxious, Avoidant attachment styles."},
+            {"text": "Nonviolent Communication: Observations, feelings, needs."}
         ]
-        if not os.path.exists(self.persist_directory):
-            os.makedirs(self.persist_directory)
-            self.vector_store = Chroma.from_texts(summaries, self.embeddings, persist_directory=self.persist_directory)
-        else:
-            self.vector_store = Chroma(persist_directory=self.persist_directory, embedding_function=self.embeddings)
+        for summary in summaries:
+            embedding = self.embeddings.embed_query(summary["text"])
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=[
+                    {
+                        "id": summary["text"],
+                        "vector": embedding,
+                        "payload": {"text": summary["text"]},
+                    }
+                ],
+            )
 
     def add_from_web(self, query: str):
         """Scrape web content using DuckDuckGo and add to vector store."""
@@ -49,14 +62,31 @@ class KnowledgeBase:
         
         if response.status_code == 200:
             results = response.json().get("RelatedTopics", [])
-            texts = [f"{r['Text']}: {r['FirstURL']}" for r in results if "Text" in r]
-            self.vector_store.add_texts(texts)
+            for result in results:
+                if "Text" in result:
+                    embedding = self.embeddings.embed_query(result["Text"])
+                    self.client.upsert(
+                        collection_name=self.collection_name,
+                        points=[
+                            {
+                                "id": result["Text"],
+                                "vector": embedding,
+                                "payload": {"text": result["Text"], "url": result.get("FirstURL")},
+                            }
+                        ],
+                    )
         else:
             st.error("Failed to fetch web results. Please check your DuckDuckGo API key.")
 
     def search(self, query: str):
         """Search vector store for relevant context."""
-        return self.vector_store.similarity_search(query)
+        embedding = self.embeddings.embed_query(query)
+        results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=embedding,
+            limit=3,
+        )
+        return [result.payload["text"] for result in results]
 
 kb = KnowledgeBase()
 kb.initialize()
@@ -107,7 +137,7 @@ class BotState(TypedDict):
 def retrieve_context(state: BotState):
     query = state["messages"][-1]
     docs = kb.search(query)
-    return {"context": "\n".join([d.page_content for d in docs])}
+    return {"context": "\n".join(docs)}
 
 def generate_response(state: BotState):
     prompt = state["messages"][-1]
@@ -144,13 +174,11 @@ if prompt := st.chat_input("Ask about relationships..."):
     # Add user message to history
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    # Run workflow
     result = workflow.invoke({
         "messages": [prompt],
         "context": ""
     })
     
-    # Add bot response to history
     response = result["response"]
     st.session_state.messages.append({"role": "assistant", "content": response})
     
