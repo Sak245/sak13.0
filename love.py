@@ -77,7 +77,7 @@ class KnowledgeBase:
     def search(self, query: str):
         """Search vector store for relevant context."""
         embedding = self.embeddings.embed_query(query)
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=self.collection_name,
             query_vector=embedding,
             limit=3,
@@ -173,10 +173,8 @@ if prompt := st.chat_input("Ask about relationships..."):
     })
     
     # Ensure 'response' key exists in result
-    if "response" not in result:
-        result["response"] = result.get("messages")[-1]["content"]
+    response = result.get("response", "[No response generated]")
     
-    response = result["response"]
     st.session_state.messages.append({"role": "assistant", "content": response})
     
 st.divider()
