@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 import logging
 import torch
+import numpy as np
 from collections import defaultdict
 import traceback
 
@@ -150,6 +151,10 @@ class KnowledgeManager:
         try:
             embedding = self.embeddings.embed_query(text)
             point_id = str(uuid.uuid4())
+            
+            # Convert to numpy array if necessary
+            if isinstance(embedding, list):
+                embedding = np.array(embedding)
             
             self.client.upsert(
                 collection_name="lovebot_knowledge",
@@ -372,19 +377,3 @@ with st.expander("🔍 Research Assistant"):
             except Exception as e:
                 st.error("Research failed. Please try again later.")
                 logging.error(traceback.format_exc())
-
-if __name__ == "__main__":
-    import sys
-    from streamlit.web import cli as stcli
-    
-    def main():
-        sys.argv = [
-            "streamlit", "run", sys.argv[0],
-            "--server.port=8501",
-            "--server.address=0.0.0.0",
-            "--server.headless=true",
-            "--server.fileWatcherType=none"
-        ]
-        sys.exit(stcli.main())
-        
-    main()
