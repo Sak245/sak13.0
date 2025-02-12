@@ -1,12 +1,6 @@
 streamlit
-langgraph
 langchain
-langchain_community
-groq
-tavily
+langgraph
 chromadb
-huggingface_hub
-torch
-transformers
-sentence-transformers
-tiktoken
+tavily
+groq
