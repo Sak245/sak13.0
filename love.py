@@ -1,10 +1,7 @@
-# Add this at the top of your file:
-import torch
-torch.set_default_dtype(torch.float32)
-
 import warnings
 import sys
 import os
+import tempfile
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
@@ -14,7 +11,6 @@ from groq import Groq
 import uuid
 from typing import TypedDict
 from duckduckgo_search import DDGS
-# Replace the pipeline import with:
 from transformers import pipeline
 import sqlite3
 import pickle
@@ -24,8 +20,10 @@ from pathlib import Path
 import re
 import logging
 import torch
-import redis
 from collections import defaultdict
+
+# Initialize torch first to prevent Streamlit watcher issues
+torch.set_default_dtype(torch.float32)
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=SyntaxWarning)
@@ -35,22 +33,22 @@ warnings.filterwarnings("ignore", category=SyntaxWarning)
 # =====================
 class Config:
     def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.qdrant_path = Path("qdrant_storage")
-        self.storage_path = Path("knowledge_storage")
-        self.redis_conn = self._init_redis()
+        # Streamlit Cloud compatibility
+        if 'HOSTNAME' in os.environ and 'streamlit' in os.environ['HOSTNAME']:
+            base_dir = Path(tempfile.mkdtemp())
+            self.qdrant_path = base_dir / "qdrant_storage"
+            self.storage_path = base_dir / "knowledge_storage"
+        else:
+            self.qdrant_path = Path("qdrant_storage")
+            self.storage_path = Path("knowledge_storage")
         
+        self.qdrant_path.mkdir(parents=True, exist_ok=True)
+        self.storage_path.mkdir(parents=True, exist_ok=True)
+        
+        self.device = "cpu"  # Streamlit Cloud compatibility
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 50  # Requests per hour
-
-    def _init_redis(self):
-        try:
-            r = redis.Redis(host='localhost', port=6379, db=0, socket_timeout=1)
-            r.ping()
-            return r
-        except redis.ConnectionError:
-            return None
 
 config = Config()
 
@@ -66,11 +64,7 @@ with st.sidebar:
     
     st.header("📊 System Status")
     st.write(f"**Processing Device:** {config.device.upper()}")
-    if config.redis_conn:
-        st.success("Redis-connected rate limiting")
-    else:
-        st.info("In-memory rate limiting")
-    st.write(f"**Qdrant Storage:** {config.qdrant_path}")
+    st.write(f"**Storage Location:** {config.storage_path}")
 
 if not groq_key:
     st.error("Please provide the Groq API key in the sidebar to proceed.")
@@ -120,7 +114,6 @@ class KnowledgeManager:
             embedding = self.embeddings.embed_query(text)
             point_id = str(uuid.uuid4())
             
-            # Qdrant storage
             self.client.upsert(
                 collection_name="lovebot_knowledge",
                 points=[PointStruct(
@@ -130,12 +123,11 @@ class KnowledgeManager:
                 )]
             )
             
-            # SQLite storage
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 conn.execute(
                     "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (point_id, text, source_type, pickle.dumps(embedding)))
-                
+                    (point_id, text, source_type, pickle.dumps(embedding))
+                )
         except Exception as e:
             logging.error(f"Knowledge addition error: {str(e)}")
             st.error("Failed to add knowledge entry")
@@ -177,35 +169,22 @@ class AIService:
         self.safety_checker = pipeline(
             "text-classification", 
             model=config.safety_model,
-            device=0 if config.device == "cuda" else -1,
-            torch_dtype=torch.float16 if config.device == "cuda" else torch.float32
+            device=-1,  # Force CPU for Streamlit compatibility
+            torch_dtype=torch.float32
         )
         self.searcher = SearchManager()
-        self.rate_limits = defaultdict(list) if not config.redis_conn else None
+        self.rate_limits = defaultdict(list)
 
     def check_rate_limit(self, user_id: str):
-        if config.redis_conn:
-            current = int(time.time())
-            key = f"ratelimit:{user_id}"
-            
-            with config.redis_conn.pipeline() as pipe:
-                pipe.zremrangebyscore(key, 0, current - 3600)
-                pipe.zcard(key)
-                pipe.zadd(key, {current: current})
-                pipe.expire(key, 3600)
-                results = pipe.execute()
-                
-            return results[1] < config.rate_limit
-        else:
-            current_time = time.time()
-            self.rate_limits[user_id] = [
-                t for t in self.rate_limits[user_id] 
-                if current_time - t < 3600
-            ]
-            if len(self.rate_limits[user_id]) >= config.rate_limit:
-                return False
-            self.rate_limits[user_id].append(current_time)
-            return True
+        current_time = time.time()
+        self.rate_limits[user_id] = [
+            t for t in self.rate_limits[user_id] 
+            if current_time - t < 3600
+        ]
+        if len(self.rate_limits[user_id]) >= config.rate_limit:
+            return False
+        self.rate_limits[user_id].append(current_time)
+        return True
 
     def generate_response(self, prompt: str, context: str, user_id: str):
         if not self.check_rate_limit(user_id):
@@ -309,35 +288,25 @@ if "messages" not in st.session_state:
 st.title("💖 LoveBot: AI Relationship Assistant")
 st.write("Ask anything about love, relationships, and dating!")
 
-# Display chat messages
-for message in st.session_state.messages:
-    role, text = message
+for role, text in st.session_state.messages:
     avatar = "💬" if role == "user" else "💖"
     with st.chat_message(role, avatar=avatar):
         st.write(text)
 
-# Handle user input
-user_input = st.chat_input("Type your message...")
-if user_input:
-    # Add user message to history
-    st.session_state.messages.append(("user", user_input))
+if prompt := st.chat_input("Type your message..."):
+    st.session_state.messages.append(("user", prompt))
     
-    # Process through workflow
     result = workflow_manager.workflow.invoke({
-        "messages": [user_input],
+        "messages": [prompt],
         "knowledge_context": "",
         "web_context": "",
         "user_id": st.session_state.user_id
     })
     
-    # Add AI response to history
     if response := result.get("response"):
         st.session_state.messages.append(("assistant", response))
-    
-    # Refresh the display
-    st.rerun()
+        st.rerun()
 
-# Additional features remain the same
 with st.expander("📖 Story Assistance"):
     story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
