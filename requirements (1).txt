@@ -1,0 +1,6 @@
+streamlit>=1.28
+langchain-chroma
+sentence-transformers
+groq
+tavily-python
+python-dotenv
