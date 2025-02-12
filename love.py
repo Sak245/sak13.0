@@ -73,18 +73,12 @@ if not groq_key:
 # 📚 Knowledge Management
 # =====================
 class KnowledgeManager:
-# =====================
-# 📚 Knowledge Management (Updated)
-# =====================
-class KnowledgeManager:
     def __init__(self):
-        # Initialize with persistent storage
         self.client = QdrantClient(
             path=str(config.qdrant_path),
-            prefer_grpc=False  # Disable GRPC for Streamlit compatibility
+            prefer_grpc=False
         )
         
-        # Simplified collection initialization
         try:
             self.client.get_collection("lovebot_knowledge")
         except Exception:
@@ -93,17 +87,7 @@ class KnowledgeManager:
                 vectors_config=VectorParams(size=384, distance=Distance.COSINE)
             )
 
-        # Rest of the class remains the same
-        self.client = QdrantClient(location=str(config.qdrant_path))
-        self._init_collection()
         self._init_sqlite()
-
-    def _init_collection(self):
-        if not self.client.collection_exists("lovebot_knowledge"):
-            self.client.create_collection(
-                collection_name="lovebot_knowledge",
-                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-            )
 
     def _init_sqlite(self):
         with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
@@ -119,7 +103,7 @@ class KnowledgeManager:
 
     def add_knowledge(self, text: str, source_type: str):
         try:
-            embedding = self.embeddings.embed_query(text)
+            embedding = HuggingFaceEmbeddings().embed_query(text)
             point_id = str(uuid.uuid4())
             
             self.client.upsert(
@@ -142,7 +126,7 @@ class KnowledgeManager:
 
     def search_knowledge(self, query: str, limit=3):
         try:
-            embedding = self.embeddings.embed_query(query)
+            embedding = HuggingFaceEmbeddings().embed_query(query)
             results = self.client.search(
                 collection_name="lovebot_knowledge",
                 query_vector=embedding,
@@ -173,12 +157,9 @@ class SearchManager:
 class AIService:
     def __init__(self):
         self.groq_client = Groq(api_key=groq_key)
-        self.safety_checker = pipeline(
-            "text-classification", 
-            model=config.safety_model
-        )
+        self.safety_checker = pipeline("text-classification", model=config.safety_model)
         self.searcher = SearchManager()
-        self.rate_limits = dict()
+        self.rate_limits = {}
 
     def generate_response(self, prompt: str, context: str, user_id: str):
         if self.rate_limits.get(user_id, 0) >= config.rate_limit:
@@ -187,13 +168,10 @@ class AIService:
         try:
             response = self.groq_client.chat.completions.create(
                 model="mixtral-8x7b-32768",
-                messages=[{
-                    "role": "system",
-                    "content": f"Context:\n{context}\nRespond as a relationship expert."
-                }, {
-                    "role": "user",
-                    "content": prompt
-                }],
+                messages=[
+                    {"role": "system", "content": f"Context:\n{context}\nRespond as a relationship expert."},
+                    {"role": "user", "content": prompt}
+                ],
                 temperature=0.7,
                 max_tokens=500
             )
@@ -201,7 +179,7 @@ class AIService:
             output = response.choices[0].message.content
             self.rate_limits[user_id] = self.rate_limits.get(user_id, 0) + 1
             return output if "harm" not in output.lower() else "Content blocked"
-            
+        
         except Exception as e:
             logging.error(f"Error: {str(e)}")
             return "I'm having trouble responding"
@@ -209,24 +187,7 @@ class AIService:
 # =====================
 # 💻 Streamlit Interface
 # =====================
-class WorkflowManager:
-    def __init__(self):
-        self.knowledge = KnowledgeManager()
-        self.ai = AIService()
-
-    def process_query(self, prompt: str, user_id: str):
-        knowledge = "\n".join(self.knowledge.search_knowledge(prompt))
-        results = self.ai.searcher.cached_search(prompt)
-        web_context = "\n".join(f"• {r['body']}" for r in results)
-        
-        return self.ai.generate_response(
-            prompt=prompt,
-            context=f"Knowledge:\n{knowledge}\nWeb Results:\n{web_context}",
-            user_id=user_id
-        )
-
-workflow = WorkflowManager()
-
+workflow = KnowledgeManager()
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
@@ -240,6 +201,6 @@ for role, text in st.session_state.messages:
 
 if prompt := st.chat_input("Ask about relationships..."):
     st.session_state.messages.append(("user", prompt))
-    response = workflow.process_query(prompt, st.session_state.user_id)
+    response = workflow.search_knowledge(prompt)
     st.session_state.messages.append(("assistant", response))
     st.rerun()
