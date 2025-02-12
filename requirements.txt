@@ -1,6 +1,6 @@
 streamlit
+langgraph
 qdrant-client
-langchain-community
 sentence-transformers
 groq
 requests
