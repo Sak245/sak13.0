@@ -1,7 +1,7 @@
 streamlit
-langgraph
 qdrant-client
+langchain-community
 sentence-transformers
 groq
-duckduckgo-search
 requests
+uuid
