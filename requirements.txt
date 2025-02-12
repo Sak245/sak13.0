@@ -1,15 +1,15 @@
-streamlit==1.42.0
-langgraph==0.2.71
-qdrant-client==1.13.2
-langchain-huggingface==0.1.2
-groq==0.18.0
-duckduckgo-search==7.3.2
-transformers==4.48.3
-torch==2.3.0 --extra-index-url https://download.pytorch.org/whl/cpu
-sentence-transformers==3.4.1
-uvicorn==0.29.0
-fastapi==0.110.1
-python-multipart==0.0.9
-python-dotenv==1.0.1
-tqdm==4.66.2
-numpy==1.26.4
+streamlit
+langgraph
+qdrant-client
+langchain-huggingface
+groq
+duckduckgo-search
+transformers
+torch --extra-index-url https://download.pytorch.org/whl/cpu
+sentence-transformers
+uvicorn
+fastapi
+python-multipart
+python-dotenv
+tqdm
+numpy
