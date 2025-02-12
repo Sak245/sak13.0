@@ -1,3 +1,6 @@
+# Add this at the TOP of your imports
+import torch
+from transformers import pipeline
 import warnings
 import os
 import tempfile
