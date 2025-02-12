@@ -301,26 +301,38 @@ if "user_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-st.title("💞 LoveBot - Relationship Expert")
+st.title("💖 LoveBot: AI Relationship Assistant")
+st.write("Ask anything about love, relationships, and dating!")
 
-for msg in st.session_state.messages:
-    role_icon = "💬" if msg["role"] == "user" else "💖"
-    st.chat_message(msg["role"], avatar=role_icon).write(msg["content"])
+# Display chat messages
+for message in st.session_state.messages:
+    role, text = message
+    avatar = "💬" if role == "user" else "💖"
+    with st.chat_message(role, avatar=avatar):
+        st.write(text)
 
-if prompt := st.chat_input("Ask about relationships..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# Handle user input
+user_input = st.chat_input("Type your message...")
+if user_input:
+    # Add user message to history
+    st.session_state.messages.append(("user", user_input))
     
+    # Process through workflow
     result = workflow_manager.workflow.invoke({
-        "messages": [prompt],
+        "messages": [user_input],
         "knowledge_context": "",
         "web_context": "",
         "user_id": st.session_state.user_id
     })
     
+    # Add AI response to history
     if response := result.get("response"):
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        st.session_state.messages.append(("assistant", response))
+    
+    # Refresh the display
     st.rerun()
 
+# Additional features remain the same
 with st.expander("📖 Story Assistance"):
     story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
