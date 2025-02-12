@@ -4,3 +4,5 @@ langgraph
 chromadb
 tavily
 groq
+python==3.10
+
