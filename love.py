@@ -8,6 +8,9 @@ from serpapi import GoogleSearch
 import uuid
 from typing import TypedDict
 
+import serpapi
+print(dir(serpapi))
+
 # =====================
 # 🔑 User Configuration
 # =====================
