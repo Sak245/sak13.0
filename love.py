@@ -73,12 +73,27 @@ if not groq_key:
 # 📚 Knowledge Management
 # =====================
 class KnowledgeManager:
+# =====================
+# 📚 Knowledge Management (Updated)
+# =====================
+class KnowledgeManager:
     def __init__(self):
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=config.embedding_model,
-            encode_kwargs={'normalize_embeddings': True}
+        # Initialize with persistent storage
+        self.client = QdrantClient(
+            path=str(config.qdrant_path),
+            prefer_grpc=False  # Disable GRPC for Streamlit compatibility
         )
         
+        # Simplified collection initialization
+        try:
+            self.client.get_collection("lovebot_knowledge")
+        except Exception:
+            self.client.recreate_collection(
+                collection_name="lovebot_knowledge",
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+            )
+
+        # Rest of the class remains the same
         self.client = QdrantClient(location=str(config.qdrant_path))
         self._init_collection()
         self._init_sqlite()
