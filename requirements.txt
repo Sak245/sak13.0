@@ -10,4 +10,13 @@ sentence-transformers
 typing_extensions
 langchain-huggingface
 python-dotenv
-accelerate
+acceleratestreamlit
+langgraph
+qdrant-client
+langchain-community
+groq
+duckduckgo-search
+transformers
+sentence-transformers
+python-dotenv
+
