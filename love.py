@@ -1,4 +1,3 @@
-# Add this at the top of love.py to suppress warnings
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=SyntaxWarning)
@@ -21,6 +20,7 @@ import time
 from pathlib import Path
 import re
 import logging
+import torch
 
 # Configure logging
 logging.basicConfig(filename='app.log', level=logging.ERROR)
@@ -47,7 +47,9 @@ class KnowledgeManager:
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(exist_ok=True)
         
-        self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        self.embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
         self.client = QdrantClient(":memory:")
         self.collection_name = "lovebot_knowledge"
         
@@ -122,6 +124,7 @@ class KnowledgeManager:
                 query_vector=embedding,
                 limit=limit,
                 with_payload=True,
+                with_vectors=False
             )
             return [r.payload["text"] for r in results if "text" in r.payload]
         except Exception as e:
@@ -136,7 +139,8 @@ class AIService:
         self.groq_client = Groq(api_key=groq_key)
         self.safety_checker = pipeline(
             "text-classification", 
-            model="Hate-speech-CNERG/dehatebert-mono-english"
+            model="Hate-speech-CNERG/dehatebert-mono-english",
+            device=0 if torch.cuda.is_available() else -1
         )
         self.rate_limiter = defaultdict(list)
         self.RATE_LIMIT = 50  # Requests per hour
@@ -255,6 +259,10 @@ with st.sidebar:
     st.header("📊 System Status")
     remaining_calls = ai_service.RATE_LIMIT - len(ai_service.rate_limiter.get(st.session_state.user_id, []))
     st.metric("Remaining Requests", remaining_calls)
+    if torch.cuda.is_available():
+        st.success(f"GPU Accelerated (CUDA {torch.version.cuda})")
+    else:
+        st.warning("Using CPU - For better performance enable CUDA")
 
 # Main Chat Interface
 st.title("💞 LoveBot - Relationship Expert")
@@ -303,4 +311,3 @@ with st.expander("🔍 Research Assistant"):
                 st.success(f"Added {len(results)} entries about {research_query}")
             except Exception as e:
                 st.error("Failed to complete research")
-
