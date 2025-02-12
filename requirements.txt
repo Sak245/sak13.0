@@ -1,20 +1,16 @@
-streamlit==1.42.0
-langgraph==0.2.71
-qdrant-client==1.13.2
-langchain-huggingface==0.1.2
-groq==0.18.0
-duckduckgo-search==7.3.2
-transformers==4.48.3
-sentence-transformers==3.4.1
-uvicorn==0.29.0
-fastapi==0.110.1
-python-multipart==0.0.9
-tqdm==4.66.2
-numpy==1.26.4
-torch==2.3.0 \
-  --extra-index-url https://download.pytorch.org/whl/cpu \
-  --hash=sha256:8e4b7b4a4a4e4b4e4b4e4b4e4b4e4b4e4b4e4b4e4b4e4b4e4b4e4b4e4b4e4b4
-protobuf==5.29.3 \
-  --hash=sha256:6d0a2c87d7ba9a3c38a656bbad6c1f3b0d6f9bcdb58e7e0a07a5c5d0a0d2b5d
-pyarrow==19.0.0 \
-  --hash=sha256:3a3c5b5a2b5b5a2b5b5a2b5b5a2b5b5a2b5b5a2b5b5a2b5b5a2b5b5a2b5b5a
+streamlit
+langgraph
+qdrant-client
+langchain-huggingface
+groq
+duckduckgo-search
+transformers
+sentence-transformers
+uvicorn
+fastapi
+python-multipart
+tqdm
+numpy
+torch --extra-index-url https://download.pytorch.org/whl/cpu
+protobuf
+pyarrow
