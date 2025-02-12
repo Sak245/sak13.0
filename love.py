@@ -19,6 +19,7 @@ from pathlib import Path
 import logging
 import torch
 from collections import defaultdict
+import traceback
 
 # Configure environment
 warnings.filterwarnings("ignore")
@@ -30,7 +31,6 @@ torch.set_default_dtype(torch.float32)
 # =====================
 class Config:
     def __init__(self):
-        # Streamlit Cloud compatibility
         if 'HOSTNAME' in os.environ and 'streamlit' in os.environ['HOSTNAME']:
             base_dir = Path(tempfile.mkdtemp())
             self.qdrant_path = base_dir / "qdrant_storage"
@@ -65,6 +65,18 @@ with st.sidebar:
 
 if not groq_key:
     st.error("Please provide the Groq API key to proceed.")
+    st.stop()
+
+# Validate API key
+try:
+    test_client = Groq(api_key=groq_key)
+    test_client.chat.completions.create(
+        model="mixtral-8x7b-32768",
+        messages=[{"role": "user", "content": "test"}],
+        max_tokens=1
+    )
+except Exception as e:
+    st.error(f"❌ Invalid API key: {str(e)}")
     st.stop()
 
 # =====================
@@ -138,7 +150,6 @@ class KnowledgeManager:
                 conn.execute(
                     "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                     (point_id, text, source_type, pickle.dumps(embedding))
-                )
         except Exception as e:
             logging.error(f"Add knowledge error: {str(e)}")
 
@@ -298,32 +309,38 @@ if prompt := st.chat_input("Ask about relationships..."):
     st.session_state.messages.append(("user", prompt))
     
     try:
-        result = workflow_manager.workflow.invoke({
-            "messages": [prompt],
-            "knowledge_context": "",
-            "web_context": "",
-            "user_id": st.session_state.user_id
-        })
+        with st.status("💞 Analyzing relationship patterns...", expanded=True) as status:
+            st.write("🔍 Searching knowledge base...")
+            result = workflow_manager.workflow.invoke({
+                "messages": [m[1] for m in st.session_state.messages],
+                "knowledge_context": "",
+                "web_context": "",
+                "user_id": st.session_state.user_id
+            })
+            status.update(label="✅ Analysis complete", state="complete")
         
         if response := result.get("response"):
             st.session_state.messages.append(("assistant", response))
         else:
-            st.session_state.messages.append(("assistant", "❌ Failed to generate response"))
+            st.error("Empty response from AI engine")
+            logging.error(f"Empty response. Full result: {result}")
             
     except Exception as e:
         st.error(f"System error: {str(e)}")
+        logging.error(traceback.format_exc())
     
     st.rerun()
 
 with st.expander("📖 Story Assistance"):
     story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
-        response = workflow_manager.ai.generate_response(
-            prompt=f"Continue this story positively: {story_prompt}",
-            context="",
-            user_id=st.session_state.user_id
-        )
-        st.write(response)
+        with st.spinner("Crafting your story..."):
+            response = workflow_manager.ai.generate_response(
+                prompt=f"Continue this story positively: {story_prompt}",
+                context="",
+                user_id=st.session_state.user_id
+            )
+            st.write(response)
 
 with st.expander("🔍 Research Assistant"):
     research_query = st.text_input("Enter research topic:")
@@ -339,3 +356,4 @@ with st.expander("🔍 Research Assistant"):
                 st.success(f"Added {len(results)} entries about {research_query}")
             except Exception as e:
                 st.error("Research failed. Please try again later.")
+                logging.error(traceback.format_exc())
