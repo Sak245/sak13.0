@@ -172,7 +172,8 @@ class KnowledgeManager:
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 conn.execute(
                     "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (point_id, text, source_type, pickle.dumps(embedding)))
+                    (point_id, text, source_type, pickle.dumps(embedding))
+                )
         except Exception as e:
             logging.error(f"Add knowledge error: {str(e)}")
 
@@ -220,6 +221,7 @@ class AIService:
         )
         self.searcher = SearchManager()
         self.rate_limits = defaultdict(list)
+        self.max_retries = 3
 
     def check_rate_limit(self, user_id: str):
         current_time = time.time()
@@ -230,26 +232,32 @@ class AIService:
         if not self.check_rate_limit(user_id):
             return "⏳ Please wait before asking more questions"
         
-        try:
-            response = self.groq_client.chat.completions.create(
-                model="mixtral-8x7b-32768",
-                messages=[{
-                    "role": "system",
-                    "content": f"Context:\n{context}\nRespond as a compassionate relationship expert."
-                }, {
-                    "role": "user",
-                    "content": prompt
-                }],
-                temperature=0.7,
-                max_tokens=500
-            )
+        for attempt in range(self.max_retries):
+            try:
+                response = self.groq_client.chat.completions.create(
+                    model="mixtral-8x7b-32768",
+                    messages=[{
+                        "role": "system",
+                        "content": f"Context:\n{context}\nRespond as a compassionate relationship expert."
+                    }, {
+                        "role": "user",
+                        "content": prompt
+                    }],
+                    temperature=0.7,
+                    max_tokens=500
+                )
+                
+                output = response.choices[0].message.content
+                if not output.strip():
+                    raise ValueError("Empty response from API")
+                    
+                return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
             
-            output = response.choices[0].message.content
-            return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
-            
-        except Exception as e:
-            logging.error(f"Generation error: {str(e)}")
-            return "⚠️ I'm having trouble responding. Please try again."
+            except Exception as e:
+                logging.error(f"Generation attempt {attempt+1} failed: {str(e)}")
+                time.sleep(0.5 * (attempt + 1))
+                
+        return "⚠️ Failed to generate response after multiple attempts"
 
     def _is_safe(self, text: str):
         try:
@@ -323,7 +331,8 @@ class WorkflowManager:
 # =====================
 # 💻 Streamlit Interface
 # =====================
-workflow_manager = WorkflowManager()
+if "workflow_manager" not in st.session_state:
+    st.session_state.workflow_manager = WorkflowManager()
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
@@ -342,24 +351,29 @@ if prompt := st.chat_input("Ask about relationships..."):
     
     try:
         with st.status("💞 Analyzing relationship patterns...", expanded=True) as status:
-            st.write("🔍 Searching knowledge base...")
-            result = workflow_manager.workflow.invoke({
-                "messages": [m[1] for m in st.session_state.messages],
-                "knowledge_context": "",
-                "web_context": "",
-                "user_id": st.session_state.user_id
-            })
-            status.update(label="✅ Analysis complete", state="complete")
-        
-        if response := result.get("response"):
-            st.session_state.messages.append(("assistant", response))
-        else:
-            st.error("Empty response from AI engine")
-            logging.error(f"Empty response. Full result: {result}")
-            
-    except Exception as e:
-        st.error(f"System error: {str(e)}")
-        logging.error(traceback.format_exc())
+            try:
+                st.write("🔍 Searching knowledge base...")
+                result = st.session_state.workflow_manager.workflow.invoke({
+                    "messages": [m[1] for m in st.session_state.messages],
+                    "knowledge_context": "",
+                    "web_context": "",
+                    "user_id": st.session_state.user_id
+                })
+                
+                if not result.get("response") or not result["response"].strip():
+                    raise ValueError("Empty AI response")
+                    
+                st.session_state.messages.append(("assistant", result["response"]))
+                status.update(label="✅ Analysis complete", state="complete")
+                
+            except Exception as e:
+                status.update(label="❌ Analysis failed", state="error")
+                st.error(f"Processing error: {str(e)}")
+                logging.error(traceback.format_exc())
+                
+    except Exception as fatal_error:
+        st.error(f"Critical system failure: {str(fatal_error)}")
+        logging.critical(traceback.format_exc())
     
     st.rerun()
 
@@ -367,7 +381,7 @@ with st.expander("📖 Story Assistance"):
     story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
         with st.spinner("Crafting your story..."):
-            response = workflow_manager.ai.generate_response(
+            response = st.session_state.workflow_manager.ai.generate_response(
                 prompt=f"Continue this story positively: {story_prompt}",
                 context="",
                 user_id=st.session_state.user_id
@@ -379,9 +393,9 @@ with st.expander("🔍 Research Assistant"):
     if st.button("Learn About This"):
         with st.spinner("Researching..."):
             try:
-                results = workflow_manager.ai.searcher.cached_search(research_query)
+                results = st.session_state.workflow_manager.ai.searcher.cached_search(research_query)
                 for result in results:
-                    workflow_manager.knowledge.add_knowledge(
+                    st.session_state.workflow_manager.knowledge.add_knowledge(
                         f"{result['title']}: {result['body']}",
                         "web_research"
                     )
