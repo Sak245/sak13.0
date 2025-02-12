@@ -77,13 +77,12 @@ class KnowledgeBase:
     def search(self, query: str):
         """Search vector store for relevant context."""
         embedding = self.embeddings.embed_query(query)
-        results = self.client.search(
+        results = self.client.query_points(
             collection_name=self.collection_name,
-            query_vector=embedding,
+            vector=embedding,
             limit=3,
-            with_payload=True,
         )
-        return [result.payload["text"] for result in results]
+        return [result.payload["text"] for result in results] if results else ["No relevant information found."]
 
 kb = KnowledgeBase()
 kb.initialize()
@@ -103,6 +102,7 @@ class LoveBot:
         ]
         
         try:
+            st.write("🔄 Sending request to Groq API...")  # Debugging line
             response = self.client.chat.completions.create(
                 messages=messages,
                 model="mixtral-8x7b-32768",
@@ -110,13 +110,13 @@ class LoveBot:
                 max_tokens=500
             )
             
-            if response.choices:
-                return response.choices[0].message.content
+            if response and response.choices:
+                return response.choices[0].message.content.strip()
             
         except Exception as e:
-            st.error(f"Error generating response: {e}")
+            st.error(f"🚨 Error generating response: {e}")
         
-        return "[No response generated]"
+        return "🤖 Sorry, I couldn't generate a response."
 
 bot = LoveBot()
 
@@ -125,7 +125,11 @@ bot = LoveBot()
 # =====================
 def safety_check(response: str) -> bool:
     """Check if response violates safety rules."""
-    return not any(term.lower() in response.lower() for term in ["manipulate", "revenge", "harm"])
+    unsafe_terms = ["manipulate", "revenge", "harm", "abuse"]
+    if any(term.lower() in response.lower() for term in unsafe_terms):
+        st.warning("⚠️ Safety check triggered! Filtering response.")
+        return False
+    return True
 
 # =====================
 # 💬 Chat Workflow
@@ -141,12 +145,12 @@ def retrieve_context(state: BotState):
 
 def generate_response(state: BotState):
     prompt = state["messages"][-1]
-    context = state["context"]
-    
+    context = state["context"] or "Let's talk about love and relationships!"
+
     response = bot.generate_response(prompt, context)
     
     if not safety_check(response):
-        return {"response": "I cannot provide advice on that topic."}
+        return {"response": "🚫 I cannot provide advice on that topic."}
     
     return {"response": response}
 
@@ -158,7 +162,7 @@ workflow.set_entry_point("retrieve_context")
 workflow.add_edge("retrieve_context", "generate_response")
 workflow.add_edge("generate_response", END)
 
-app = workflow.compile()  # Compile the workflow
+app = workflow.compile()
 
 # =====================
 # 💖 Streamlit UI
@@ -173,32 +177,11 @@ for msg in st.session_state.messages:
     st.chat_message(msg["role"], avatar=role_icon).write(msg["content"])
 
 if prompt := st.chat_input("Ask about relationships..."):
-    # Add user message to history
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    result = app.invoke({
-        "messages": [prompt],
-        "context": ""
-    })
+    result = app.invoke({"messages": [prompt], "context": ""})
     
-    # Ensure 'response' key exists in result
-    response = result.get("response", "[No response generated]")
+    response = result.get("response", "🤖 Sorry, no response generated.")
     
     st.session_state.messages.append({"role": "assistant", "content": response})
-    
-st.divider()
 
-with st.expander("📖 Story Completion"):
-    story_input = st.text_area("Start your story:")
-    
-    if st.button("Complete Story"):
-        story_completion = bot.generate_response(f"Continue this story positively:\n{story_input}", "")
-        st.success(story_completion)
-
-st.divider()
-
-with st.expander("🔍 Web Search & Vector Store"):
-    query_input = st.text_input("Search the web for knowledge:")
-    
-    if query_input:
-        kb.add_from_web(query_input)
