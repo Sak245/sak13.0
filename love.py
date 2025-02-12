@@ -1,3 +1,8 @@
+# Add this at the top of love.py to suppress warnings
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=SyntaxWarning)
+
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
