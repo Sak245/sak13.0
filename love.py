@@ -2,7 +2,7 @@ import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import PointStruct, VectorParams, Distance
-from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import uuid
 from typing import TypedDict
@@ -112,7 +112,7 @@ class KnowledgeManager:
     def search_knowledge(self, query: str, limit=3):
         try:
             embedding = self.embeddings.embed_query(query)
-            results = self.client.search(
+            results = self.client.query_points(
                 collection_name=self.collection_name,
                 query_vector=embedding,
                 limit=limit,
