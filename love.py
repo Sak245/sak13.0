@@ -1,11 +1,11 @@
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import VectorParams, Distance
+from qdrant_client.http.models import PointStruct, VectorParams, Distance
 from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import requests
-from typing import TypedDict
+import uuid
 
 # =====================
 # 🔑 User Configuration
@@ -40,45 +40,36 @@ class KnowledgeBase:
     def initialize(self):
         """Initialize vector store with default summaries."""
         summaries = [
-            {"text": "5 Love Languages: Words, Acts, Gifts, Time, Touch."},
-            {"text": "Attached: Secure, Anxious, Avoidant attachment styles."},
-            {"text": "Nonviolent Communication: Observations, feelings, needs."}
+            "5 Love Languages: Words, Acts, Gifts, Time, Touch.",
+            "Attached: Secure, Anxious, Avoidant attachment styles.",
+            "Nonviolent Communication: Observations, feelings, needs."
         ]
         for summary in summaries:
-            embedding = self.embeddings.embed_query(summary["text"])
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=[
-                    {
-                        "id": hash(summary["text"]),  # ✅ Ensure ID is an integer
-                        "vector": embedding,
-                        "payload": {"text": summary["text"]},
-                    }
-                ],
+            embedding = self.embeddings.embed_query(summary)
+            point = PointStruct(
+                id=str(uuid.uuid4()),  # Use a unique string ID
+                vector=embedding,
+                payload={"text": summary}
             )
+            self.client.upsert(collection_name=self.collection_name, points=[point])
 
     def add_from_web(self, query: str):
         """Scrape web content using DuckDuckGo and add to vector store."""
-        try:
-            response = requests.get(f"https://api.duckduckgo.com/?q={query}&format=json")
-            response.raise_for_status()  # Raise error if request fails
-
+        response = requests.get(f"https://api.duckduckgo.com/?q={query}&format=json")
+        
+        if response.status_code == 200:
             results = response.json().get("RelatedTopics", [])
             for result in results:
                 if "Text" in result:
                     embedding = self.embeddings.embed_query(result["Text"])
-                    self.client.upsert(
-                        collection_name=self.collection_name,
-                        points=[
-                            {
-                                "id": hash(result["Text"]),  # ✅ Ensure ID is an integer
-                                "vector": embedding,
-                                "payload": {"text": result["Text"], "url": result.get("FirstURL")},
-                            }
-                        ],
+                    point = PointStruct(
+                        id=str(uuid.uuid4()),  # Use a unique string ID
+                        vector=embedding,
+                        payload={"text": result["Text"], "url": result.get("FirstURL")}
                     )
-        except requests.RequestException as e:
-            st.error(f"Failed to fetch web results: {e}")
+                    self.client.upsert(collection_name=self.collection_name, points=[point])
+        else:
+            st.error("Failed to fetch web results. Please check your DuckDuckGo API key.")
 
     def search(self, query: str):
         """Search vector store for relevant context."""
@@ -183,7 +174,7 @@ if prompt := st.chat_input("Ask about relationships..."):
     
     response = result["response"]
     st.session_state.messages.append({"role": "assistant", "content": response})
-
+    
 st.divider()
 
 with st.expander("📖 Story Completion"):
