@@ -1,7 +1,3 @@
-# Add this at the VERY TOP of your code
-import torch
-torch._C._set_default_dtype(torch.float32)  # Fix for Streamlit watcher error
-
 import warnings
 import sys
 import os
@@ -21,16 +17,15 @@ import pickle
 from functools import lru_cache
 import time
 from pathlib import Path
-import re
 import logging
+
+# Suppress warnings and configure environment
+warnings.filterwarnings("ignore")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# Initialize Torch first
 import torch
-from collections import defaultdict
-
-# Initialize torch first to prevent Streamlit watcher issues
-torch.set_default_dtype(torch.float32)
-
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=SyntaxWarning)
+torch._C._set_default_dtype(torch.float32)
 
 # =====================
 # 🛠️ Configuration Setup
@@ -49,10 +44,10 @@ class Config:
         self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
-        self.device = "cpu"  # Streamlit Cloud compatibility
+        self.device = "cpu"
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
-        self.rate_limit = 50  # Requests per hour
+        self.rate_limit = 50
 
 config = Config()
 
@@ -71,7 +66,7 @@ with st.sidebar:
     st.write(f"**Storage Location:** {config.storage_path}")
 
 if not groq_key:
-    st.error("Please provide the Groq API key in the sidebar to proceed.")
+    st.error("Please provide the Groq API key to proceed.")
     st.stop()
 
 # =====================
@@ -81,16 +76,10 @@ class KnowledgeManager:
     def __init__(self):
         self.embeddings = HuggingFaceEmbeddings(
             model_name=config.embedding_model,
-            model_kwargs={'device': config.device},
             encode_kwargs={'normalize_embeddings': True}
         )
         
-        self.client = QdrantClient(
-            path=str(config.qdrant_path),
-            prefer_grpc=True,
-            timeout=30
-        )
-        
+        self.client = QdrantClient(location=str(config.qdrant_path))
         self._init_collection()
         self._init_sqlite()
 
@@ -123,7 +112,7 @@ class KnowledgeManager:
                 points=[PointStruct(
                     id=point_id,
                     vector=embedding,
-                    payload={"text": text, "type": source_type}
+                    payload={"text": text}
                 )]
             )
             
@@ -134,21 +123,20 @@ class KnowledgeManager:
                 )
         except Exception as e:
             logging.error(f"Knowledge addition error: {str(e)}")
-            st.error("Failed to add knowledge entry")
+            st.error("Failed to add knowledge")
 
-class KnowledgeManager:
     def search_knowledge(self, query: str, limit=3):
         try:
             embedding = self.embeddings.embed_query(query)
             results = self.client.search(
                 collection_name="lovebot_knowledge",
-                query_vector=embedding.tolist(),  # Convert to list for Qdrant
+                query_vector=embedding,
                 limit=limit,
                 with_payload=True
             )
-            return [r.payload["text"] for r in results if "text" in r.payload]
+            return [r.payload["text"] for r in results]
         except Exception as e:
-            logging.error(f"Knowledge search error: {str(e)}")
+            logging.error(f"Search error: {str(e)}")
             return []
 
 # =====================
@@ -172,27 +160,14 @@ class AIService:
         self.groq_client = Groq(api_key=groq_key)
         self.safety_checker = pipeline(
             "text-classification", 
-            model=config.safety_model,
-            device=-1,  # Force CPU for Streamlit compatibility
-            torch_dtype=torch.float32
+            model=config.safety_model
         )
         self.searcher = SearchManager()
-        self.rate_limits = defaultdict(list)
-
-    def check_rate_limit(self, user_id: str):
-        current_time = time.time()
-        self.rate_limits[user_id] = [
-            t for t in self.rate_limits[user_id] 
-            if current_time - t < 3600
-        ]
-        if len(self.rate_limits[user_id]) >= config.rate_limit:
-            return False
-        self.rate_limits[user_id].append(current_time)
-        return True
+        self.rate_limits = dict()
 
     def generate_response(self, prompt: str, context: str, user_id: str):
-        if not self.check_rate_limit(user_id):
-            return "Rate limit exceeded. Please try again later."
+        if self.rate_limits.get(user_id, 0) >= config.rate_limit:
+            return "Rate limit exceeded"
         
         try:
             response = self.groq_client.chat.completions.create(
@@ -209,129 +184,47 @@ class AIService:
             )
             
             output = response.choices[0].message.content
-            return output if self._is_safe(output) else "Content blocked by safety filter"
+            self.rate_limits[user_id] = self.rate_limits.get(user_id, 0) + 1
+            return output if "harm" not in output.lower() else "Content blocked"
             
         except Exception as e:
-            logging.error(f"Generation error: {str(e)}")
-            return "I'm having trouble responding right now."
-
-    def _is_safe(self, text: str):
-        try:
-            result = self.safety_checker(text[:512])[0]
-            return result["label"] != "LABEL_1" or result["score"] < 0.85
-        except Exception as e:
-            logging.error(f"Safety check error: {str(e)}")
-            return False
-
-# =====================
-# 🤖 Workflow Management
-# =====================
-class BotState(TypedDict):
-    messages: list[str]
-    knowledge_context: str
-    web_context: str
-    user_id: str
-
-class WorkflowManager:
-    def __init__(self):
-        self.knowledge = KnowledgeManager()
-        self.ai = AIService()
-        self.workflow = self._build_workflow()
-
-    def _build_workflow(self):
-        workflow = StateGraph(BotState)
-        
-        workflow.add_node("retrieve_knowledge", self.retrieve_knowledge)
-        workflow.add_node("retrieve_web", self.retrieve_web)
-        workflow.add_node("generate", self.generate)
-        
-        workflow.set_entry_point("retrieve_knowledge")
-        workflow.add_edge("retrieve_knowledge", "retrieve_web")
-        workflow.add_edge("retrieve_web", "generate")
-        workflow.add_edge("generate", END)
-        
-        return workflow.compile()
-
-    def retrieve_knowledge(self, state: BotState):
-        try:
-            query = state["messages"][-1]
-            return {"knowledge_context": "\n".join(self.knowledge.search_knowledge(query))}
-        except Exception as e:
-            logging.error(f"Knowledge retrieval error: {str(e)}")
-            return {"knowledge_context": ""}
-
-    def retrieve_web(self, state: BotState):
-        try:
-            results = self.ai.searcher.cached_search(state["messages"][-1])
-            return {"web_context": "\n".join(f"• {r['body']}" for r in results)}
-        except Exception as e:
-            logging.error(f"Web retrieval error: {str(e)}")
-            return {"web_context": ""}
-
-    def generate(self, state: BotState):
-        full_context = f"""
-        KNOWLEDGE BASE:\n{state['knowledge_context']}
-        WEB CONTEXT:\n{state['web_context']}
-        """
-        return {"response": self.ai.generate_response(
-            prompt=state["messages"][-1],
-            context=full_context,
-            user_id=state["user_id"]
-        )}
+            logging.error(f"Error: {str(e)}")
+            return "I'm having trouble responding"
 
 # =====================
 # 💻 Streamlit Interface
 # =====================
-workflow_manager = WorkflowManager()
+class WorkflowManager:
+    def __init__(self):
+        self.knowledge = KnowledgeManager()
+        self.ai = AIService()
+
+    def process_query(self, prompt: str, user_id: str):
+        knowledge = "\n".join(self.knowledge.search_knowledge(prompt))
+        results = self.ai.searcher.cached_search(prompt)
+        web_context = "\n".join(f"• {r['body']}" for r in results)
+        
+        return self.ai.generate_response(
+            prompt=prompt,
+            context=f"Knowledge:\n{knowledge}\nWeb Results:\n{web_context}",
+            user_id=user_id
+        )
+
+workflow = WorkflowManager()
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-st.title("💖 LoveBot: AI Relationship Assistant")
-st.write("Ask anything about love, relationships, and dating!")
+st.title("💖 LoveBot: Relationship Expert")
 
 for role, text in st.session_state.messages:
-    avatar = "💬" if role == "user" else "💖"
-    with st.chat_message(role, avatar=avatar):
+    with st.chat_message(role, avatar="💬" if role == "user" else "💖"):
         st.write(text)
 
-if prompt := st.chat_input("Type your message..."):
+if prompt := st.chat_input("Ask about relationships..."):
     st.session_state.messages.append(("user", prompt))
-    
-    result = workflow_manager.workflow.invoke({
-        "messages": [prompt],
-        "knowledge_context": "",
-        "web_context": "",
-        "user_id": st.session_state.user_id
-    })
-    
-    if response := result.get("response"):
-        st.session_state.messages.append(("assistant", response))
-        st.rerun()
-
-with st.expander("📖 Story Assistance"):
-    story_prompt = st.text_area("Start your relationship story:")
-    if st.button("Continue Story"):
-        response = workflow_manager.ai.generate_response(
-            prompt=f"Continue this story positively: {story_prompt}",
-            context="",
-            user_id=st.session_state.user_id
-        )
-        st.write(response)
-
-with st.expander("🔍 Research Assistant"):
-    research_query = st.text_input("Enter research topic:")
-    if st.button("Learn About This"):
-        with st.spinner("Researching..."):
-            try:
-                results = workflow_manager.ai.searcher.cached_search(research_query)
-                for result in results:
-                    workflow_manager.knowledge.add_knowledge(
-                        f"{result['title']}: {result['body']}",
-                        "web_research"
-                    )
-                st.success(f"Added {len(results)} entries about {research_query}")
-            except Exception as e:
-                st.error("Research failed. Please try again later.")
+    response = workflow.process_query(prompt, st.session_state.user_id)
+    st.session_state.messages.append(("assistant", response))
+    st.rerun()
