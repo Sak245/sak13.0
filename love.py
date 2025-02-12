@@ -1,192 +1,205 @@
 import streamlit as st
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import StateGraph, END
-from transformers import pipeline
-from duckduckgo_search import DDGS
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import PointStruct, VectorParams, Distance
+from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
-import requests
-from bs4 import BeautifulSoup
-import re
 import uuid
 from typing import TypedDict
+from duckduckgo_search import DDGS
+from transformers import pipeline
+import re
 
 # =====================
-# 🔑 Sidebar Configuration
+# 🔑 User Configuration
 # =====================
 st.set_page_config(page_title="LoveBot", page_icon="💖", layout="wide")
 
 with st.sidebar:
-    st.header("🔐 API Configuration")
+    st.header("🔐 Configuration")
     groq_key = st.text_input("Enter Groq API Key:", type="password")
     st.markdown("[Get Groq Key](https://console.groq.com/keys)")
-    
+
 if not groq_key:
     st.error("Please provide the Groq API key in the sidebar to proceed.")
     st.stop()
 
 # =====================
-# 1. Enhanced Book Summary Gathering
+# 📚 Enhanced Knowledge Base (Qdrant)
 # =====================
-def get_book_summary(title, author):
-    """Fetch book summaries with improved parsing and fallback"""
-    try:
-        with DDGS() as ddgs:
-            results = ddgs.text(f"{title} by {author} book summary", max_results=3)
+class KnowledgeBase:
+    def __init__(self):
+        self.client = QdrantClient(":memory:")
+        self.embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        self.collection_name = "lovebot_knowledge"
+        
+        # Initialize or reset collection
+        if self.client.collection_exists(self.collection_name):
+            self.client.delete_collection(self.collection_name)
             
-        summary = ""
-        for result in results:
-            summary += f"{result['title']}: {result['body']}\n\n"
-            if len(summary) > 1500:
-                break
+        self.client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+        )
+        
+        # Initialize with book summaries
+        self.initialize_with_books()
 
-        return re.sub(r'\s+', ' ', summary).strip()[:1500] or f"Key concepts from {title} about relationships"
-    
-    except Exception as e:
-        st.error(f"Error fetching summary: {str(e)}")
-        return f"General information about {title}"
+    def initialize_with_books(self):
+        """Initialize with relationship book summaries"""
+        books = [
+            ("Nonviolent Communication", "Marshall B. Rosenberg"),
+            ("The Seven Principles for Making Marriage Work", "John Gottman"),
+            ("Attached", "Amir Levine")
+        ]
+        
+        for title, author in books:
+            summary = self.get_book_summary(title, author)
+            if summary:
+                self._add_to_collection(summary, "book_summary")
 
-# =====================
-# 2. Vector Store Setup
-# =====================
-books = [
-    ("Nonviolent Communication", "Marshall B. Rosenberg"),
-    ("The Seven Principles for Making Marriage Work", "John Gottman"),
-    ("Attached", "Amir Levine"),
-    ("The 5 Love Languages", "Gary Chapman"),
-    ("Hold Me Tight", "Sue Johnson")
-]
+    def get_book_summary(self, title: str, author: str) -> str:
+        """Fetch book summary from web"""
+        try:
+            with DDGS() as ddgs:
+                results = ddgs.text(f"{title} by {author} summary", max_results=1)
+                if results:
+                    return f"{title} by {author}: {results[0]['body']}"
+        except Exception as e:
+            st.error(f"Error fetching {title} summary: {str(e)}")
+        return ""
 
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=100,
-    separators=["\n\n", "\n", ". ", "! ", "? ", ", "]
-)
+    def _add_to_collection(self, text: str, source_type: str):
+        """Helper to add documents to collection"""
+        embedding = self.embeddings.embed_query(text)
+        point = PointStruct(
+            id=str(uuid.uuid4()),
+            vector=embedding,
+            payload={"text": text, "type": source_type}
+        )
+        self.client.upsert(collection_name=self.collection_name, points=[point])
 
-docs = []
-metadatas = []
+    def add_from_web(self, query: str):
+        """Add web results to knowledge base"""
+        try:
+            with DDGS() as ddgs:
+                results = ddgs.text(query, max_results=3)
+            for result in results:
+                text = f"{result['title']}: {result['body']}"
+                self._add_to_collection(text, "web_result")
+        except Exception as e:
+            st.error(f"Web search error: {str(e)}")
 
-for title, author in books:
-    summary = get_book_summary(title, author)
-    if summary:
-        chunks = text_splitter.split_text(summary)
-        docs.extend(chunks)
-        metadatas.extend([{
-            "source": title,
-            "author": author,
-            "type": "book_summary"
-        } for _ in chunks])
+    def search(self, query: str, limit: int = 3):
+        """Search knowledge base with safety checks"""
+        try:
+            embedding = self.embeddings.embed_query(query)
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=embedding,
+                limit=limit,
+                with_payload=True,
+            )
+            return [r.payload["text"] for r in results if "text" in r.payload]
+        except Exception as e:
+            st.error(f"Search error: {str(e)}")
+            return []
 
-embedding_function = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2",
-    model_kwargs={'device': 'cpu'}
-)
-
-vector_store = Chroma.from_texts(
-    texts=docs,
-    metadatas=metadatas,
-    embedding=embedding_function,
-    persist_directory="./chroma_db"
-)
-
-# =====================
-# 3. Safety System
-# =====================
-safety_classifier = pipeline(
-    "text-classification", 
-    model="Hate-speech-CNERG/dehatebert-mono-english"
-)
-
-def safety_check(text: str) -> bool:
-    """Enhanced safety check with error handling"""
-    try:
-        result = safety_classifier(text[:512])[0]
-        return result["label"] != "LABEL_1" or result["score"] < 0.85
-    except Exception as e:
-        st.error(f"Safety check error: {str(e)}")
-        return "harm" not in text.lower()
+kb = KnowledgeBase()
 
 # =====================
-# 4. Groq Integration
+# 🧠 Enhanced AI Core
 # =====================
 class LoveBot:
-    def __init__(self, api_key):
-        self.client = Groq(api_key=api_key)
-    
-    def generate(self, prompt: str, context: str) -> str:
-        """Generate response with Groq's API"""
+    def __init__(self):
+        self.client = Groq(api_key=groq_key)
+        self.safety_checker = pipeline(
+            "text-classification", 
+            model="Hate-speech-CNERG/dehatebert-mono-english"
+        )
+
+    def generate_response(self, prompt: str, context: str):
+        """Generate safe response with context"""
+        messages = [
+            {"role": "system", "content": f"Context:\n{context}\n\nRespond helpfully as a relationship expert."},
+            {"role": "user", "content": prompt}
+        ]
+        
         try:
             response = self.client.chat.completions.create(
                 model="mixtral-8x7b-32768",
-                messages=[{
-                    "role": "system",
-                    "content": f"You're a relationship expert. Use this context:\n{context}"
-                }, {
-                    "role": "user",
-                    "content": prompt
-                }],
+                messages=messages,
                 temperature=0.7,
                 max_tokens=500
             )
-            return response.choices[0].message.content
+            output = response.choices[0].message.content
+            
+            if not self._is_safe(output):
+                return "I cannot provide advice on that topic."
+                
+            return output
+            
         except Exception as e:
-            st.error(f"Groq API error: {str(e)}")
+            st.error(f"Generation error: {str(e)}")
             return "I'm having trouble responding right now."
 
-bot = LoveBot(groq_key)
+    def _is_safe(self, text: str) -> bool:
+        """Safety check using DeHateBERT"""
+        try:
+            result = self.safety_checker(text[:512])[0]
+            return result["label"] != "LABEL_1" or result["score"] < 0.85
+        except Exception as e:
+            st.error(f"Safety check error: {str(e)}")
+            return "harm" not in text.lower()
+
+bot = LoveBot()
 
 # =====================
-# 5. LangGraph Workflow
+# 🤖 Enhanced Workflow
 # =====================
 class BotState(TypedDict):
-    messages: list
-    book_context: str
+    messages: list[str]
+    knowledge_context: str
     web_context: str
 
-def retrieve_book_context(state: BotState):
-    """Retrieve context from vector store"""
+def retrieve_knowledge(state: BotState):
+    """Retrieve from knowledge base"""
     try:
-        docs = vector_store.similarity_search(state["messages"][-1], k=3)
-        return {"book_context": "\n".join([d.page_content for d in docs])}
+        query = state["messages"][-1]
+        return {"knowledge_context": "\n".join(kb.search(query))}
     except Exception as e:
-        st.error(f"Vector search error: {str(e)}")
-        return {"book_context": ""}
+        st.error(f"Knowledge retrieval error: {str(e)}")
+        return {"knowledge_context": ""}
 
-def retrieve_web_context(state: BotState):
-    """Retrieve web context with DuckDuckGo"""
+def retrieve_web(state: BotState):
+    """Retrieve fresh web context"""
     try:
         with DDGS() as ddgs:
-            results = ddgs.text(state["messages"][-1], max_results=3)
-        return {"web_context": "\n".join([f"{r['title']}: {r['body']}" for r in results])}
+            results = ddgs.text(state["messages"][-1], max_results=2)
+        return {"web_context": "\n".join(f"• {r['body']}" for r in results)}
     except Exception as e:
-        st.error(f"Web search error: {str(e)}")
+        st.error(f"Web retrieval error: {str(e)}")
         return {"web_context": ""}
 
 def generate_response(state: BotState):
     """Generate final response"""
-    context = f"""BOOK KNOWLEDGE:
-    {state['book_context']}
+    full_context = f"""
+    KNOWLEDGE BASE CONTEXT:
+    {state['knowledge_context']}
     
     WEB CONTEXT:
     {state['web_context']}
     """
-    
-    response = bot.generate(state["messages"][-1], context)
-    
-    if not safety_check(response):
-        return {"response": "I cannot provide advice on that topic."}
-    
-    return {"response": response}
+    return {"response": bot.generate_response(state["messages"][-1], full_context)}
 
 workflow = StateGraph(BotState)
-workflow.add_node("get_books", retrieve_book_context)
-workflow.add_node("get_web", retrieve_web_context)
+workflow.add_node("retrieve_knowledge", retrieve_knowledge)
+workflow.add_node("retrieve_web", retrieve_web)
 workflow.add_node("generate", generate_response)
 
-workflow.set_entry_point("get_books")
-workflow.add_edge("get_books", "get_web")
-workflow.add_edge("get_web", "generate")
+workflow.set_entry_point("retrieve_knowledge")
+workflow.add_edge("retrieve_knowledge", "retrieve_web")
+workflow.add_edge("retrieve_web", "generate")
 workflow.add_edge("generate", END)
 
 app = workflow.compile()
@@ -194,8 +207,9 @@ app = workflow.compile()
 # =====================
 # 💖 Streamlit UI
 # =====================
-st.title("💞 OpenLoveBot - Relationship Advisor")
+st.title("💞 LoveBot - Relationship Expert")
 
+# Chat Interface
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -208,24 +222,26 @@ if prompt := st.chat_input("Ask about relationships..."):
     
     result = app.invoke({
         "messages": [prompt],
-        "book_context": "",
+        "knowledge_context": "",
         "web_context": ""
     })
     
-    response = result.get("response", "I'm having trouble responding right now.")
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    if response := result.get("response"):
+        st.session_state.messages.append({"role": "assistant", "content": response})
     st.rerun()
 
-# =====================
-# 📚 Requirements
-# =====================
-# Requirements.txt:
-# streamlit
-# langchain-chroma
-# sentence-transformers
-# duckduckgo-search
-# groq
-# transformers
-# beautifulsoup4
-# requests
-# langgraph
+# Additional Features
+with st.expander("📖 Story Completion"):
+    story_input = st.text_area("Start a relationship story:")
+    if st.button("Continue Story"):
+        st.write(bot.generate_response(f"Continue this story positively: {story_input}", ""))
+
+with st.expander("🔍 Research Assistant"):
+    research_query = st.text_input("Research topic:")
+    if st.button("Learn & Store"):
+        kb.add_from_web(research_query)
+        st.success(f"Learned about {research_query}!")
+
+# Requirements
+st.sidebar.markdown("""
+**Required Packages:**
