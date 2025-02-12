@@ -172,6 +172,10 @@ if prompt := st.chat_input("Ask about relationships..."):
         "context": ""
     })
     
+    # Ensure 'response' key exists in result
+    if "response" not in result:
+        result["response"] = result.get("messages")[-1]["content"]
+    
     response = result["response"]
     st.session_state.messages.append({"role": "assistant", "content": response})
     
