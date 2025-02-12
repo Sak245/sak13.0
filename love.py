@@ -6,7 +6,7 @@ from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import uuid
 from typing import TypedDict
-from duckduckgo_search import DDGS  # ✅ Correct import
+from duckduckgo_search import DDGS
 
 # =====================
 # 🔑 User Configuration
@@ -56,7 +56,7 @@ class KnowledgeBase:
     def add_from_web(self, query: str):
         """Fetch search results using DuckDuckGo and store in vector DB."""
         with DDGS() as ddgs:
-            results = ddgs.text(query, max_results=3)  # ✅ Using duckduckgo-search API
+            results = ddgs.text(query, max_results=3)
         
         if not results:
             st.error("No search results found.")
@@ -70,20 +70,17 @@ class KnowledgeBase:
             )
             self.client.upsert(collection_name=self.collection_name, points=[point])
 
-def search(self, query: str):
-    """Search vector store for relevant context."""
-    embedding = self.embeddings.embed_query(query)
-    
-    results = self.client.search(  # ✅ Corrected function call
-        collection_name=self.collection_name,
-        query_vector=embedding,
-        limit=3,
-        with_payload=True
-    )
-
-    # Ensure results contain valid payloads
-    return [result.payload["text"] for result in results if "text" in result.payload]
-
+    def search(self, query: str):
+        """Search the knowledge base for relevant context."""
+        embedding = self.embeddings.embed_query(query)
+        results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=embedding,
+            limit=3,
+            with_payload=True,
+        )
+        
+        return [r.payload["text"] for r in results if "text" in r.payload]
 
 kb = KnowledgeBase()
 kb.initialize()
@@ -103,7 +100,7 @@ class LoveBot:
         ]
         
         try:
-            response = self.client.chat.completions.create(  # ✅ Fixed API call
+            response = self.client.chat.completions.create(
                 model="mixtral-8x7b-32768",
                 messages=messages,
                 temperature=0.7,
