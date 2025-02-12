@@ -5,6 +5,7 @@ langchain-community==0.3.17
 groq==0.18.0
 duckduckgo-search==7.3.2
 transformers==4.48.3
-typing_extensions==4.12.2
-sentence-transformers==3.0.1
 torch==2.3.0
+torchvision==0.18.0
+sentence-transformers==3.0.1
+typing_extensions==4.12.2
