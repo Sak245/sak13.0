@@ -7,3 +7,4 @@ chromadb
 groq
 streamlit
 requests
+sqlite3
