@@ -5,10 +5,11 @@ langchain-huggingface==0.1.2
 groq==0.18.0
 duckduckgo-search==7.3.2
 transformers==4.48.3
-torch==2.6.0 --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.3.0 --extra-index-url https://download.pytorch.org/whl/cpu
 sentence-transformers==3.4.1
 uvicorn==0.29.0
 fastapi==0.110.1
 python-multipart==0.0.9
 python-dotenv==1.0.1
 tqdm==4.66.2
+numpy==1.26.4
