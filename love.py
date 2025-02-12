@@ -1,3 +1,7 @@
+# Add this at the VERY TOP of your code
+import torch
+torch._C._set_default_dtype(torch.float32)  # Fix for Streamlit watcher error
+
 import warnings
 import sys
 import os
@@ -132,15 +136,15 @@ class KnowledgeManager:
             logging.error(f"Knowledge addition error: {str(e)}")
             st.error("Failed to add knowledge entry")
 
+class KnowledgeManager:
     def search_knowledge(self, query: str, limit=3):
         try:
             embedding = self.embeddings.embed_query(query)
-            results = self.client.query_points(
+            results = self.client.search(
                 collection_name="lovebot_knowledge",
-                query_vector=embedding,
+                query_vector=embedding.tolist(),  # Convert to list for Qdrant
                 limit=limit,
-                with_payload=True,
-                with_vectors=False
+                with_payload=True
             )
             return [r.payload["text"] for r in results if "text" in r.payload]
         except Exception as e:
