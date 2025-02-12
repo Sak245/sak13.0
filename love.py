@@ -21,6 +21,10 @@ import torch
 import numpy as np
 from collections import defaultdict
 import traceback
+import sys
+
+# Workaround for Streamlit watcher bug
+sys.modules['torch.classes'] = None
 
 # Configure environment
 warnings.filterwarnings("ignore")
@@ -152,7 +156,7 @@ class KnowledgeManager:
             embedding = self.embeddings.embed_query(text)
             point_id = str(uuid.uuid4())
             
-            # Convert to numpy array if necessary
+            # Ensure proper vector format
             if isinstance(embedding, list):
                 embedding = np.array(embedding)
             
@@ -169,13 +173,16 @@ class KnowledgeManager:
                 conn.execute(
                     "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                     (point_id, text, source_type, pickle.dumps(embedding))
-                )
         except Exception as e:
             logging.error(f"Add knowledge error: {str(e)}")
 
     def search_knowledge(self, query: str, limit=3):
         try:
             embedding = self.embeddings.embed_query(query)
+            # Ensure proper vector format
+            if isinstance(embedding, list):
+                embedding = np.array(embedding)
+                
             results = self.client.search(
                 collection_name="lovebot_knowledge",
                 query_vector=embedding.tolist(),
@@ -284,7 +291,8 @@ class WorkflowManager:
     def retrieve_knowledge(self, state: BotState):
         try:
             query = state["messages"][-1]
-            return {"knowledge_context": "\n".join(self.knowledge.search_knowledge(query))}
+            context = self.knowledge.search_knowledge(query)
+            return {"knowledge_context": "\n".join(context) if context else ""}
         except Exception as e:
             logging.error(f"Knowledge error: {str(e)}")
             return {"knowledge_context": ""}
@@ -292,7 +300,7 @@ class WorkflowManager:
     def retrieve_web(self, state: BotState):
         try:
             results = self.ai.searcher.cached_search(state["messages"][-1])
-            return {"web_context": "\n".join(f"• {r['body']}" for r in results)}
+            return {"web_context": "\n".join(f"• {r['body']}" for r in results) if results else ""}
         except Exception as e:
             logging.error(f"Web error: {str(e)}")
             return {"web_context": ""}
@@ -301,7 +309,11 @@ class WorkflowManager:
         full_context = f"""
         KNOWLEDGE BASE:\n{state['knowledge_context']}
         WEB CONTEXT:\n{state['web_context']}
-        """
+        """.strip()
+        
+        if not full_context:
+            full_context = "No relevant context found"
+            
         return {"response": self.ai.generate_response(
             prompt=state["messages"][-1],
             context=full_context,
