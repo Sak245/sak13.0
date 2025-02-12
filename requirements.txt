@@ -11,3 +11,6 @@ uuid
 duckduckgo-search>=3.8.5
 serpapi
 typing-extensions
+duckduckgo-search
+transformers
+beautifulsoup4
