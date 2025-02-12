@@ -39,19 +39,22 @@ class KnowledgeBase:
             vectors_config=VectorParams(size=384, distance=Distance.COSINE),
         )
 
-    def initialize(self):
-        """Initialize vector store with predefined knowledge."""
-        summaries = [
-            "5 Love Languages: Words, Acts, Gifts, Time, Touch.",
-            "Attachment Styles: Secure, Anxious, Avoidant.",
-            "Nonviolent Communication: Observations, Feelings, Needs."
+    def search(self, query: str):
+        """Search the knowledge base for relevant context."""
+        embedding = self.embeddings.embed_query(query)
+        results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=embedding,
+            limit=3,
+            with_payload=True,
+        )
+        
+        return [
+            r.payload.get("text", "") 
+            for r in results 
+            if r.payload and r.payload.get("text")
         ]
-        for summary in summaries:
-            embedding = self.embeddings.embed_query(summary)
-            point = PointStruct(
-                id=str(uuid.uuid4()), vector=embedding, payload={"text": summary}
-            )
-            self.client.upsert(collection_name=self.collection_name, points=[point])
+
 
     def add_from_web(self, query: str):
         """Fetch search results using DuckDuckGo and store in vector DB."""
@@ -132,13 +135,18 @@ class BotState(TypedDict):
     context: str
 
 def retrieve_context(state: BotState):
-    query = state["messages"][-1]
-    docs = kb.search(query)
+    try:
+        query = state["messages"][-1]
+    except (KeyError, IndexError):
+        return {"context": "[No query found]"}
     
-    if not docs:
-        return {"context": "[No relevant context found]"}
-
-    return {"context": "\n".join(docs)}
+    try:
+        docs = kb.search(query)
+    except Exception as e:
+        st.error(f"Search error: {e}")
+        return {"context": "[Search failed]"}
+    
+    return {"context": "\n".join(docs) if docs else "[No relevant context found]"}
 
 def generate_response(state: BotState):
     prompt = state["messages"][-1]
