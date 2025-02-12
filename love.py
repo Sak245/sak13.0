@@ -6,7 +6,7 @@ from langchain_community.embeddings.huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import uuid
 from typing import TypedDict
-from duckduckgo_search import DDGS  # ✅ Better DuckDuckGo Search
+from duckduckgo_search import DDGS  # ✅ Correct import
 
 # =====================
 # 🔑 User Configuration
