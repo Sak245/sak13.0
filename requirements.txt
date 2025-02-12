@@ -1,12 +1,12 @@
 streamlit
 langgraph
 qdrant-client
-langchain-community
+langchain-huggingface
 groq
 duckduckgo-search
 transformers
 torch
 sentence-transformers
-langchain-huggingface
+pandas
+tqdm
 python-dotenv
-accelerate
