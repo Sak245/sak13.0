@@ -1,10 +1,7 @@
-langchain
-langchain-community
-transformers
-sentence-transformers
-torch
-chromadb
-groq
 streamlit
+langgraph
+qdrant-client
+sentence-transformers
+groq
+duckduckgo-search
 requests
-sqlite3
