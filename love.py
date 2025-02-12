@@ -1,9 +1,6 @@
 import warnings
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-warnings.filterwarnings("ignore", category=SyntaxWarning)
-
 import sys
-import subprocess
+import os
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
@@ -17,26 +14,43 @@ from transformers import pipeline
 import sqlite3
 import pickle
 from functools import lru_cache
-from collections import defaultdict
 import time
 from pathlib import Path
 import re
 import logging
 import torch
+import redis
+from collections import defaultdict
 
-# Validate CUDA environment
-if not torch.cuda.is_available():
-    st.error("""
-    CUDA not available! Required for GPU acceleration.
-    Check NVIDIA drivers and CUDA installation.
-    """)
-    sys.exit(1)
-
-# Configure logging
-logging.basicConfig(filename='app.log', level=logging.ERROR)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 # =====================
-# 🔑 User Configuration
+# 🛠️ Configuration Setup
+# =====================
+class Config:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.qdrant_path = Path("qdrant_storage")
+        self.storage_path = Path("knowledge_storage")
+        self.redis_conn = self._init_redis()
+        
+        self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+        self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
+        self.rate_limit = 50  # Requests per hour
+
+    def _init_redis(self):
+        try:
+            r = redis.Redis(host='localhost', port=6379, db=0, socket_timeout=1)
+            r.ping()
+            return r
+        except redis.ConnectionError:
+            return None
+
+config = Config()
+
+# =====================
+# 🔐 Streamlit Configuration
 # =====================
 st.set_page_config(page_title="LoveBot", page_icon="💖", layout="wide")
 
@@ -44,46 +58,48 @@ with st.sidebar:
     st.header("🔐 Configuration")
     groq_key = st.text_input("Enter Groq API Key:", type="password")
     st.markdown("[Get Groq Key](https://console.groq.com/keys)")
+    
+    st.header("📊 System Status")
+    st.write(f"**Processing Device:** {config.device.upper()}")
+    if config.redis_conn:
+        st.success("Redis-connected rate limiting")
+    else:
+        st.info("In-memory rate limiting")
+    st.write(f"**Qdrant Storage:** {config.qdrant_path}")
 
 if not groq_key:
     st.error("Please provide the Groq API key in the sidebar to proceed.")
     st.stop()
 
 # =====================
-# 📚 Enhanced Knowledge Base
+# 📚 Knowledge Management
 # =====================
 class KnowledgeManager:
-    def __init__(self, storage_dir="./storage"):
-        self.storage_dir = Path(storage_dir)
-        self.storage_dir.mkdir(exist_ok=True)
-        
+    def __init__(self):
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={'device': 'cuda'},
+            model_name=config.embedding_model,
+            model_kwargs={'device': config.device},
             encode_kwargs={'normalize_embeddings': True}
         )
+        
         self.client = QdrantClient(
-            ":memory:",
+            path=str(config.qdrant_path),
             prefer_grpc=True,
             timeout=30
         )
-        self.collection_name = "lovebot_knowledge"
         
-        self._init_vector_db()
+        self._init_collection()
         self._init_sqlite()
-        self._load_persistent_data()
 
-    def _init_vector_db(self):
-        if self.client.collection_exists(self.collection_name):
-            self.client.delete_collection(self.collection_name)
-            
-        self.client.create_collection(
-            collection_name=self.collection_name,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
+    def _init_collection(self):
+        if not self.client.collection_exists("lovebot_knowledge"):
+            self.client.create_collection(
+                collection_name="lovebot_knowledge",
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            )
 
     def _init_sqlite(self):
-        with sqlite3.connect(self.storage_dir / "knowledge.db") as conn:
+        with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS knowledge_entries (
                     id TEXT PRIMARY KEY,
@@ -94,27 +110,14 @@ class KnowledgeManager:
                 )
             """)
 
-    def _load_persistent_data(self):
-        with sqlite3.connect(self.storage_dir / "knowledge.db") as conn:
-            rows = conn.execute("SELECT id, text, vector FROM knowledge_entries").fetchall()
-            for id_, text, vector_blob in rows:
-                self.client.upsert(
-                    collection_name=self.collection_name,
-                    points=[PointStruct(
-                        id=id_,
-                        vector=pickle.loads(vector_blob),
-                        payload={"text": text}
-                    )]
-                )
-
     def add_knowledge(self, text: str, source_type: str):
         try:
             embedding = self.embeddings.embed_query(text)
             point_id = str(uuid.uuid4())
             
-            # Add to vector DB
+            # Qdrant storage
             self.client.upsert(
-                collection_name=self.collection_name,
+                collection_name="lovebot_knowledge",
                 points=[PointStruct(
                     id=point_id,
                     vector=embedding,
@@ -122,21 +125,21 @@ class KnowledgeManager:
                 )]
             )
             
-            # Add to SQLite
-            with sqlite3.connect(self.storage_dir / "knowledge.db") as conn:
+            # SQLite storage
+            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 conn.execute(
-                    "INSERT INTO knowledge_entries (id, text, source_type, vector) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                     (point_id, text, source_type, pickle.dumps(embedding))
-                )
+                
         except Exception as e:
-            logging.error(f"Error adding knowledge: {str(e)}")
-            st.error("Failed to add knowledge to database")
+            logging.error(f"Knowledge addition error: {str(e)}")
+            st.error("Failed to add knowledge entry")
 
     def search_knowledge(self, query: str, limit=3):
         try:
             embedding = self.embeddings.embed_query(query)
             results = self.client.query_points(
-                collection_name=self.collection_name,
+                collection_name="lovebot_knowledge",
                 query_vector=embedding,
                 limit=limit,
                 with_payload=True,
@@ -144,26 +147,63 @@ class KnowledgeManager:
             )
             return [r.payload["text"] for r in results if "text" in r.payload]
         except Exception as e:
+            logging.error(f"Knowledge search error: {str(e)}")
+            return []
+
+# =====================
+# 🔍 Search Management
+# =====================
+class SearchManager:
+    @lru_cache(maxsize=100)
+    def cached_search(self, query: str):
+        try:
+            with DDGS() as ddgs:
+                return ddgs.text(query, max_results=2)
+        except Exception as e:
             logging.error(f"Search error: {str(e)}")
             return []
 
 # =====================
-# 🧠 AI Core Components
+# 🧠 AI Service
 # =====================
 class AIService:
     def __init__(self):
         self.groq_client = Groq(api_key=groq_key)
         self.safety_checker = pipeline(
             "text-classification", 
-            model="Hate-speech-CNERG/dehatebert-mono-english",
-            device=0,
-            torch_dtype=torch.float16
+            model=config.safety_model,
+            device=0 if config.device == "cuda" else -1,
+            torch_dtype=torch.float16 if config.device == "cuda" else torch.float32
         )
-        self.rate_limiter = defaultdict(list)
-        self.RATE_LIMIT = 50  # Requests per hour
+        self.searcher = SearchManager()
+        self.rate_limits = defaultdict(list) if not config.redis_conn else None
+
+    def check_rate_limit(self, user_id: str):
+        if config.redis_conn:
+            current = int(time.time())
+            key = f"ratelimit:{user_id}"
+            
+            with config.redis_conn.pipeline() as pipe:
+                pipe.zremrangebyscore(key, 0, current - 3600)
+                pipe.zcard(key)
+                pipe.zadd(key, {current: current})
+                pipe.expire(key, 3600)
+                results = pipe.execute()
+                
+            return results[1] < config.rate_limit
+        else:
+            current_time = time.time()
+            self.rate_limits[user_id] = [
+                t for t in self.rate_limits[user_id] 
+                if current_time - t < 3600
+            ]
+            if len(self.rate_limits[user_id]) >= config.rate_limit:
+                return False
+            self.rate_limits[user_id].append(current_time)
+            return True
 
     def generate_response(self, prompt: str, context: str, user_id: str):
-        if not self._check_rate_limit(user_id):
+        if not self.check_rate_limit(user_id):
             return "Rate limit exceeded. Please try again later."
         
         try:
@@ -181,7 +221,7 @@ class AIService:
             )
             
             output = response.choices[0].message.content
-            return output if self._is_safe(output) else "I cannot provide advice on that topic."
+            return output if self._is_safe(output) else "Content blocked by safety filter"
             
         except Exception as e:
             logging.error(f"Generation error: {str(e)}")
@@ -193,21 +233,10 @@ class AIService:
             return result["label"] != "LABEL_1" or result["score"] < 0.85
         except Exception as e:
             logging.error(f"Safety check error: {str(e)}")
-            return "harm" not in text.lower()
-
-    def _check_rate_limit(self, user_id: str):
-        current_time = time.time()
-        self.rate_limiter[user_id] = [
-            t for t in self.rate_limiter[user_id] 
-            if current_time - t < 3600
-        ]
-        if len(self.rate_limiter[user_id]) >= self.RATE_LIMIT:
             return False
-        self.rate_limiter[user_id].append(current_time)
-        return True
 
 # =====================
-# 🤖 Application Workflow
+# 🤖 Workflow Management
 # =====================
 class BotState(TypedDict):
     messages: list[str]
@@ -215,72 +244,63 @@ class BotState(TypedDict):
     web_context: str
     user_id: str
 
-def create_workflow():
-    workflow = StateGraph(BotState)
-    
-    def retrieve_knowledge(state: BotState):
+class WorkflowManager:
+    def __init__(self):
+        self.knowledge = KnowledgeManager()
+        self.ai = AIService()
+        self.workflow = self._build_workflow()
+
+    def _build_workflow(self):
+        workflow = StateGraph(BotState)
+        
+        workflow.add_node("retrieve_knowledge", self.retrieve_knowledge)
+        workflow.add_node("retrieve_web", self.retrieve_web)
+        workflow.add_node("generate", self.generate)
+        
+        workflow.set_entry_point("retrieve_knowledge")
+        workflow.add_edge("retrieve_knowledge", "retrieve_web")
+        workflow.add_edge("retrieve_web", "generate")
+        workflow.add_edge("generate", END)
+        
+        return workflow.compile()
+
+    def retrieve_knowledge(self, state: BotState):
         try:
             query = state["messages"][-1]
-            return {"knowledge_context": "\n".join(knowledge_manager.search_knowledge(query))}
+            return {"knowledge_context": "\n".join(self.knowledge.search_knowledge(query))}
         except Exception as e:
             logging.error(f"Knowledge retrieval error: {str(e)}")
             return {"knowledge_context": ""}
 
-    def retrieve_web(state: BotState):
+    def retrieve_web(self, state: BotState):
         try:
-            with DDGS() as ddgs:
-                results = ddgs.text(state["messages"][-1], max_results=2)
+            results = self.ai.searcher.cached_search(state["messages"][-1])
             return {"web_context": "\n".join(f"• {r['body']}" for r in results)}
         except Exception as e:
             logging.error(f"Web retrieval error: {str(e)}")
             return {"web_context": ""}
 
-    def generate_response(state: BotState):
+    def generate(self, state: BotState):
         full_context = f"""
         KNOWLEDGE BASE:\n{state['knowledge_context']}
         WEB CONTEXT:\n{state['web_context']}
         """
-        response = ai_service.generate_response(
+        return {"response": self.ai.generate_response(
             prompt=state["messages"][-1],
             context=full_context,
             user_id=state["user_id"]
-        )
-        return {"response": response}
-
-    workflow.add_node("retrieve_knowledge", retrieve_knowledge)
-    workflow.add_node("retrieve_web", retrieve_web)
-    workflow.add_node("generate", generate_response)
-
-    workflow.set_entry_point("retrieve_knowledge")
-    workflow.add_edge("retrieve_knowledge", "retrieve_web")
-    workflow.add_edge("retrieve_web", "generate")
-    workflow.add_edge("generate", END)
-
-    return workflow.compile()
+        )}
 
 # =====================
 # 💻 Streamlit Interface
 # =====================
-knowledge_manager = KnowledgeManager()
-ai_service = AIService()
-workflow_app = create_workflow()
+workflow_manager = WorkflowManager()
 
-# Initialize session state
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Sidebar Controls
-with st.sidebar:
-    st.header("📊 System Status")
-    remaining_calls = ai_service.RATE_LIMIT - len(ai_service.rate_limiter.get(st.session_state.user_id, []))
-    st.metric("Remaining Requests", remaining_calls)
-    st.success(f"GPU Active: {torch.cuda.get_device_name(0)}")
-    st.metric("CUDA Version", torch.version.cuda)
-    st.metric("PyTorch Version", torch.__version__)
-
-# Main Chat Interface
 st.title("💞 LoveBot - Relationship Expert")
 
 for msg in st.session_state.messages:
@@ -290,7 +310,7 @@ for msg in st.session_state.messages:
 if prompt := st.chat_input("Ask about relationships..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    result = workflow_app.invoke({
+    result = workflow_manager.workflow.invoke({
         "messages": [prompt],
         "knowledge_context": "",
         "web_context": "",
@@ -301,11 +321,10 @@ if prompt := st.chat_input("Ask about relationships..."):
         st.session_state.messages.append({"role": "assistant", "content": response})
     st.rerun()
 
-# Additional Features
 with st.expander("📖 Story Assistance"):
     story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
-        response = ai_service.generate_response(
+        response = workflow_manager.ai.generate_response(
             prompt=f"Continue this story positively: {story_prompt}",
             context="",
             user_id=st.session_state.user_id
@@ -317,13 +336,12 @@ with st.expander("🔍 Research Assistant"):
     if st.button("Learn About This"):
         with st.spinner("Researching..."):
             try:
-                with DDGS() as ddgs:
-                    results = ddgs.text(research_query, max_results=3)
+                results = workflow_manager.ai.searcher.cached_search(research_query)
                 for result in results:
-                    knowledge_manager.add_knowledge(
+                    workflow_manager.knowledge.add_knowledge(
                         f"{result['title']}: {result['body']}",
                         "web_research"
                     )
                 st.success(f"Added {len(results)} entries about {research_query}")
             except Exception as e:
-                st.error("Failed to complete research")
+                st.error("Research failed. Please try again later.")
