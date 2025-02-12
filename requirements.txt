@@ -5,7 +5,6 @@ langchain-community
 groq
 duckduckgo-search
 transformers
-sqlite3
 pickle-mixin
 functools
 uuid
