@@ -114,7 +114,7 @@ class KnowledgeManager:
         )
         self._init_collection()
         self._init_sqlite()
-        self._seed_initial_data()
+        self._ensure_persistence()
 
     def _init_collection(self):
         try:
@@ -133,7 +133,7 @@ class KnowledgeManager:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS knowledge_entries (
                         id TEXT PRIMARY KEY,
-                        text TEXT,
+                        text TEXT UNIQUE,
                         source_type TEXT,
                         vector BLOB,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -141,6 +141,17 @@ class KnowledgeManager:
                 """)
         except Exception as e:
             logging.error(f"Database error: {str(e)}")
+
+    def _ensure_persistence(self):
+        """Ensure existing knowledge persists across sessions"""
+        try:
+            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
+                cur = conn.execute("SELECT COUNT(*) FROM knowledge_entries")
+                if cur.fetchone()[0] == 0:
+                    self._seed_initial_data()
+        except Exception as e:
+            logging.error(f"Persistence check failed: {str(e)}")
+            self._seed_initial_data()
 
     def _seed_initial_data(self):
         initial_data = [
@@ -156,10 +167,10 @@ class KnowledgeManager:
             embedding = self.embeddings.embed_query(text)
             point_id = str(uuid.uuid4())
             
-            # Ensure proper vector format
             if isinstance(embedding, list):
                 embedding = np.array(embedding)
             
+            # Add to vector store
             self.client.upsert(
                 collection_name="lovebot_knowledge",
                 points=[PointStruct(
@@ -169,9 +180,10 @@ class KnowledgeManager:
                 )]
             )
             
+            # Add to SQLite
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 conn.execute(
-                    "INSERT INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
                     (point_id, text, source_type, pickle.dumps(embedding))
                 )
         except Exception as e:
@@ -180,7 +192,6 @@ class KnowledgeManager:
     def search_knowledge(self, query: str, limit=3):
         try:
             embedding = self.embeddings.embed_query(query)
-            # Ensure proper vector format
             if isinstance(embedding, list):
                 embedding = np.array(embedding)
                 
@@ -222,6 +233,7 @@ class AIService:
         self.searcher = SearchManager()
         self.rate_limits = defaultdict(list)
         self.max_retries = 3
+        self.retry_delay = 1
 
     def check_rate_limit(self, user_id: str):
         current_time = time.time()
@@ -255,7 +267,7 @@ class AIService:
             
             except Exception as e:
                 logging.error(f"Generation attempt {attempt+1} failed: {str(e)}")
-                time.sleep(0.5 * (attempt + 1))
+                time.sleep(self.retry_delay * (attempt + 1))
                 
         return "⚠️ Failed to generate response after multiple attempts"
 
@@ -341,6 +353,23 @@ if "messages" not in st.session_state:
 
 st.title("💖 LoveBot: AI Relationship Assistant")
 
+# Permanent Knowledge Addition
+with st.expander("📥 Add Custom Knowledge"):
+    custom_input = st.text_area("Enter your relationship insight:", key="custom_input")
+    if st.button("💾 Save Permanently"):
+        if custom_input.strip():
+            try:
+                st.session_state.workflow_manager.knowledge.add_knowledge(
+                    text=custom_input,
+                    source_type="user"
+                )
+                st.success("Knowledge added to permanent storage!")
+            except Exception as e:
+                st.error(f"Failed to save: {str(e)}")
+        else:
+            st.warning("Please enter valid text to save")
+
+# Chat Interface
 for role, text in st.session_state.messages:
     avatar = "💬" if role == "user" else "💖"
     with st.chat_message(role, avatar=avatar):
@@ -377,6 +406,7 @@ if prompt := st.chat_input("Ask about relationships..."):
     
     st.rerun()
 
+# Additional Features
 with st.expander("📖 Story Assistance"):
     story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
