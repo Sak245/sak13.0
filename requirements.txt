@@ -1,8 +1,8 @@
 streamlit
-langchain
 langgraph
+langchain_community
 chromadb
-tavily
+huggingface_hub
 groq
-python==3.10
-
+requests
+pydantic
