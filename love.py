@@ -1,5 +1,5 @@
 import sys
-sys.modules['torch.classes'] = None  # Critical Torch workaround - MUST BE FIRST
+sys.modules['torch.classes'] = None  # Critical Torch workaround (MUST BE FIRST)
 
 import warnings
 import os
@@ -118,9 +118,9 @@ class KnowledgeManager:
     def _seed_initial_data(self):
         """Add default relationship knowledge"""
         initial_data = [
-            ("Healthy communication is the foundation of strong relationships", "seed"),
-            ("Respecting boundaries builds trust in relationships", "seed"),
-            ("Conflict resolution requires empathy and active listening", "seed")
+            ("Healthy relationships require trust and communication", "seed"),
+            ("Setting boundaries is essential for relationship health", "seed"),
+            ("Effective conflict resolution involves active listening", "seed")
         ]
         for text, source in initial_data:
             try:
@@ -162,14 +162,10 @@ class KnowledgeManager:
     def search_knowledge(self, query: str, limit: int = 3) -> list[str]:
         try:
             embedding = self.embeddings.embed_query(query)
-            if isinstance(embedding, list):
-                embedding = np.array(embedding)
-                
             results = self.client.search(
                 collection_name="lovebot_knowledge",
-                query_vector=embedding.tolist(),
+                query_vector=embedding,
                 limit=limit,
-                with_payload=True,
                 score_threshold=0.3
             )
             return [r.payload.get("text", "") for r in results if r.payload]
