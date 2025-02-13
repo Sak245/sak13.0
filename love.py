@@ -1,8 +1,6 @@
-# Critical Torch workaround must be FIRST
 import sys
-sys.modules['torch.classes'] = None  # Fixes RuntimeError
+sys.modules['torch.classes'] = None  # Critical Torch workaround - MUST BE FIRST
 
-# Then other imports
 import warnings
 import os
 import tempfile
@@ -73,13 +71,38 @@ class KnowledgeManager:
             model_name=config.embedding_model,
             encode_kwargs={'normalize_embeddings': True}
         )
-        self.client = QdrantClient(
-            path=str(config.qdrant_path),
-            prefer_grpc=False
-        )
+        self.client = QdrantClient(path=str(config.qdrant_path))
         self._init_collection()
         self._init_sqlite()
-        self._ensure_persistence()  # Now properly called
+        self._ensure_persistence()  # Initialize persistence check
+
+    def _init_collection(self):
+        try:
+            if not self.client.collection_exists("lovebot_knowledge"):
+                self.client.create_collection(
+                    collection_name="lovebot_knowledge",
+                    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+                )
+        except Exception as e:
+            logging.error(f"Collection init error: {str(e)}")
+            raise RuntimeError("Failed to initialize knowledge base")
+
+    def _init_sqlite(self):
+        try:
+            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS knowledge_entries (
+                        id TEXT PRIMARY KEY,
+                        text TEXT UNIQUE,
+                        source_type TEXT,
+                        vector BLOB,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.commit()
+        except Exception as e:
+            logging.error(f"Database init error: {str(e)}")
+            raise RuntimeError("Failed to initialize database")
 
     def _ensure_persistence(self):
         """Ensure initial data exists in database"""
@@ -103,9 +126,8 @@ class KnowledgeManager:
             try:
                 self.add_knowledge(text, source)
             except Exception as e:
-                logging.error(f"Failed to seed entry: {text}.) 
-Error: ({str(e)}")
-                
+                logging.error(f"Failed to seed entry: {text}. Error: {str(e)}")
+
     def add_knowledge(self, text: str, source_type: str) -> bool:
         try:
             text = text.strip()
