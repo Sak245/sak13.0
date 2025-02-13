@@ -23,15 +23,13 @@ from collections import defaultdict
 import traceback
 import sys
 import re
-from fastapi import FastAPI
-import uvicorn
 
 # Workaround for Streamlit watcher bug
 sys.modules['torch.classes'] = None
 
 # Configure environment
 warnings.filterwarnings("ignore")
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"]
 torch.set_default_dtype(torch.float32)
 
 # Configure logging
@@ -61,7 +59,7 @@ class Config:
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 50
-        self.max_text_length = 1000  # Character limit for knowledge entries
+        self.max_text_length = 1000
 
 config = Config()
 
@@ -147,7 +145,6 @@ class KnowledgeManager:
             logging.error(f"Database error: {str(e)}")
 
     def _ensure_persistence(self):
-        """Ensure existing knowledge persists across sessions"""
         try:
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM knowledge_entries")
@@ -167,7 +164,6 @@ class KnowledgeManager:
             self.add_knowledge(text, source)
 
     def _chunk_text(self, text: str):
-        """Split large texts into manageable chunks"""
         paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
         chunks = []
         current_chunk = []
@@ -419,6 +415,8 @@ with st.expander("📥 Add Custom Knowledge"):
 # Chat Interface
 for role, text in st.session_state.messages:
     avatar = "💬" if role == "user" else "💖"
+    if role == "system":
+        avatar = "ℹ️"
     with st.chat_message(role, avatar=avatar):
         st.write(text)
 
@@ -457,36 +455,45 @@ if prompt := st.chat_input("Ask about relationships..."):
 with st.expander("📖 Story Assistance"):
     story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
-        with st.spinner("Crafting your story..."):
-            response = st.session_state.workflow_manager.ai.generate_response(
-                prompt=f"Continue this story positively: {story_prompt}",
-                context="",
-                user_id=st.session_state.user_id
-            )
-            st.write(response)
+        if story_prompt.strip():
+            st.session_state.messages.append(("user", f"Continue this story: {story_prompt}"))
+            try:
+                with st.status("📖 Continuing your story...") as status:
+                    result = st.session_state.workflow_manager.workflow.invoke({
+                        "messages": [m[1] for m in st.session_state.messages],
+                        "knowledge_context": "",
+                        "web_context": "",
+                        "user_id": st.session_state.user_id
+                    })
+                    st.session_state.messages.append(("assistant", result["response"]))
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error continuing story: {str(e)}")
+        else:
+            st.warning("Please enter a story beginning")
 
 with st.expander("🔍 Research Assistant"):
     research_query = st.text_input("Enter research topic:")
     if st.button("Learn About This"):
-        with st.spinner("Researching..."):
+        if research_query.strip():
             try:
-                results = st.session_state.workflow_manager.ai.searcher.cached_search(research_query)
-                for result in results:
-                    st.session_state.workflow_manager.knowledge.add_knowledge(
-                        f"{result['title']}: {result['body']}",
-                        "web_research"
-                    )
-                st.success(f"Added {len(results)} entries about {research_query}")
+                with st.status("🔍 Researching..."):
+                    results = st.session_state.workflow_manager.ai.searcher.cached_search(research_query)
+                    if results:
+                        count = len(results)
+                        st.session_state.messages.append(("system", 
+                            f"Researched '{research_query}', found {count} sources. Updating knowledge base."))
+                        for result in results:
+                            text = f"{result['title']}: {result['body'][:500]}"
+                            st.session_state.workflow_manager.knowledge.add_knowledge(
+                                text, "web_research"
+                            )
+                        st.rerun()
+                    else:
+                        st.session_state.messages.append(("system",
+                            f"No results found for '{research_query}'"))
+                        st.rerun()
             except Exception as e:
                 st.error("Research failed. Please try again later.")
-                logging.error(traceback.format_exc())
-
-# Health check endpoint
-app = FastAPI()
-
-@app.get("/healthz")
-def health_check():
-    return {"status": "healthy"}
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8501)
+        else:
+            st.warning("Please enter a research topic")
