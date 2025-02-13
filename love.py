@@ -190,16 +190,4 @@ class AIService:
         
         return "⚠️ Please try your question again later"
 
-# Rest of the code remains the same with proper error handling
 
-# Update requirements.txt to:
-"""
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.0
-streamlit==1.42.0
-qdrant-client==1.9.2
-sentence-transformers==3.0.0
-duckduckgo-search==4.1.0
-groq>=0.18.0  # Updated Groq version
-rich==13.7.1
-"""
