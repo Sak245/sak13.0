@@ -4,7 +4,7 @@ qdrant-client==1.13.2
 langchain-huggingface==0.1.2
 groq==0.18.0
 duckduckgo-search==7.3.2
-transformers==4.48.3
+transformers[torch]==4.48.3
 sentence-transformers==3.4.1
 torch==2.6.0
 protobuf==3.20.3
