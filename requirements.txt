@@ -6,6 +6,7 @@ groq
 duckduckgo-search
 transformers
 sentence-transformers
+rich
 torch --index-url https://download.pytorch.org/whl/cpu
 protobuf
 numpy
