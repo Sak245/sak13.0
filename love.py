@@ -432,15 +432,3 @@ with chat_container:
 
 st.markdown("---")
 st.markdown("💝 **LoveBot** - Your AI Relationship Assistant")
-
-# requirements.txt content
-"""
---extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.2.0
-streamlit==1.42.0
-langchain-community==0.2.0
-qdrant-client==1.9.2
-sentence-transformers==3.0.0
-duckduckgo-search==4.1.0
-groq==0.3.2
-rich==13.7.1
