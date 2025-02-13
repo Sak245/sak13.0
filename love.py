@@ -59,7 +59,9 @@ class Config:
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 50
-        self.max_text_length = 1000  # Character limit for knowledge entries
+        self.max_text_length = 1000
+        self.retry_attempts = 3
+        self.retry_delay = 2
 
 config = Config()
 
@@ -72,33 +74,11 @@ st.write("""
     [data-testid="stStatusWidget"] {
         display: none;
     }
+    .stTextArea textarea {
+        min-height: 100px;
+    }
 </style>
 """, unsafe_allow_html=True)
-
-with st.sidebar:
-    st.header("🔐 Configuration")
-    groq_key = st.text_input("Enter Groq API Key:", type="password")
-    st.markdown("[Get Groq Key](https://console.groq.com/keys)")
-    
-    st.header("📊 System Status")
-    st.write(f"**Processing Device:** {config.device.upper()}")
-    st.write(f"**Storage Location:** {config.storage_path}")
-
-if not groq_key:
-    st.error("Please provide the Groq API key to proceed.")
-    st.stop()
-
-# Validate API key
-try:
-    test_client = Groq(api_key=groq_key)
-    test_client.chat.completions.create(
-        model="mixtral-8x7b-32768",
-        messages=[{"role": "user", "content": "test"}],
-        max_tokens=1
-    )
-except Exception as e:
-    st.error(f"❌ Invalid API key: {str(e)}")
-    st.stop()
 
 # =====================
 # 📚 Enhanced Knowledge Management
@@ -126,8 +106,8 @@ class KnowledgeManager:
                     vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                 )
         except Exception as e:
-            logging.error(f"Collection error: {str(e)}")
-            st.error("Failed to initialize knowledge base")
+            logging.error(f"Collection initialization error: {str(e)}")
+            raise RuntimeError("Failed to initialize knowledge base")
 
     def _init_sqlite(self):
         try:
@@ -141,11 +121,12 @@ class KnowledgeManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
+                conn.commit()
         except Exception as e:
-            logging.error(f"Database error: {str(e)}")
+            logging.error(f"Database initialization error: {str(e)}")
+            raise RuntimeError("Failed to initialize database")
 
     def _ensure_persistence(self):
-        """Ensure existing knowledge persists across sessions"""
         try:
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM knowledge_entries")
@@ -157,15 +138,19 @@ class KnowledgeManager:
 
     def _seed_initial_data(self):
         initial_data = [
-            ("Love requires trust and communication", "seed"),
-            ("Healthy relationships need boundaries", "seed"),
-            ("Conflict resolution is key for lasting relationships", "seed")
+            ("Healthy relationships are built on trust, respect, and open communication", "seed"),
+            ("Setting and respecting boundaries is essential for relationship health", "seed"),
+            ("Effective conflict resolution involves active listening and empathy", "seed"),
+            ("Long-term relationships require both partners to grow and adapt together", "seed"),
+            ("Self-care and maintaining individual identity are important in relationships", "seed")
         ]
         for text, source in initial_data:
-            self.add_knowledge(text, source)
+            try:
+                self.add_knowledge(text, source)
+            except Exception as e:
+                logging.error(f"Failed to seed entry: {text}. Error: {str(e)}")
 
-    def _chunk_text(self, text: str):
-        """Split large texts into manageable chunks"""
+    def _chunk_text(self, text: str) -> list[str]:
         sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
         chunks = []
         current_chunk = []
@@ -180,7 +165,8 @@ class KnowledgeManager:
                 current_chunk.append(sentence)
                 current_length += len(sentence)
             else:
-                chunks.append(" ".join(current_chunk))
+                if current_chunk:
+                    chunks.append(" ".join(current_chunk))
                 current_chunk = [sentence]
                 current_length = len(sentence)
         
@@ -189,48 +175,58 @@ class KnowledgeManager:
             
         return chunks
 
-    def add_knowledge(self, text: str, source_type: str):
+    def add_knowledge(self, text: str, source_type: str) -> bool:
         try:
-            # Clean and validate input
             text = text.strip()
             if not text:
                 raise ValueError("Empty text input")
                 
-            if len(text) > config.max_text_length * 10:  # Allow 10x chunks
+            if len(text) > config.max_text_length * 10:
+                success = True
                 for chunk in self._chunk_text(text):
-                    self._add_single_knowledge(chunk, source_type)
+                    if not self._add_single_knowledge(chunk, source_type):
+                        success = False
+                return success
             else:
-                self._add_single_knowledge(text, source_type)
+                return self._add_single_knowledge(text, source_type)
                 
         except Exception as e:
             logging.error(f"Add knowledge error: {str(e)}")
-            raise
+            return False
 
-    def _add_single_knowledge(self, text: str, source_type: str):
-        embedding = self.embeddings.embed_query(text)
-        point_id = str(uuid.uuid4())
-        
-        if isinstance(embedding, list):
-            embedding = np.array(embedding)
-        
-        # Add to vector store
-        self.client.upsert(
-            collection_name="lovebot_knowledge",
-            points=[PointStruct(
-                id=point_id,
-                vector=embedding.tolist(),
-                payload={"text": text}
-            )]
-        )
-        
-        # Add to SQLite
-        with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                (point_id, text, source_type, pickle.dumps(embedding))
+    def _add_single_knowledge(self, text: str, source_type: str) -> bool:
+        try:
+            embedding = self.embeddings.embed_query(text)
+            point_id = str(uuid.uuid4())
+            
+            if isinstance(embedding, list):
+                embedding = np.array(embedding)
+            
+            # Add to vector store
+            self.client.upsert(
+                collection_name="lovebot_knowledge",
+                points=[PointStruct(
+                    id=point_id,
+                    vector=embedding.tolist(),
+                    payload={"text": text}
+                )]
             )
+            
+            # Add to SQLite
+            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                    (point_id, text, source_type, pickle.dumps(embedding))
+                )
+                conn.commit()
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Failed to add knowledge entry: {str(e)}")
+            return False
 
-    def search_knowledge(self, query: str, limit=3):
+    def search_knowledge(self, query: str, limit: int = 3) -> list[str]:
         try:
             embedding = self.embeddings.embed_query(query)
             if isinstance(embedding, list):
@@ -243,20 +239,26 @@ class KnowledgeManager:
                 with_payload=True,
                 score_threshold=0.3
             )
+            
             return [r.payload.get("text", "") for r in results if r.payload]
+            
         except Exception as e:
-            logging.error(f"Search error: {str(e)}")
-            return ["Knowledge base unavailable"]
+            logging.error(f"Knowledge search error: {str(e)}")
+            return ["Unable to access knowledge base at the moment"]
 
 # =====================
 # 🔍 Search Management
 # =====================
 class SearchManager:
     @lru_cache(maxsize=100)
-    def cached_search(self, query: str):
+    def cached_search(self, query: str) -> list[dict]:
         try:
             with DDGS() as ddgs:
-                return ddgs.text(query, max_results=2)
+                results = list(ddgs.text(
+                    query + " relationship advice",
+                    max_results=2
+                ))
+                return results if results else []
         except Exception as e:
             logging.error(f"Web search error: {str(e)}")
             return []
@@ -266,61 +268,74 @@ class SearchManager:
 # =====================
 class AIService:
     def __init__(self):
-        self.groq_client = Groq(api_key=groq_key)
+        self.groq_client = Groq(api_key=st.session_state.groq_key)
         self.safety_checker = pipeline(
             "text-classification", 
             model=config.safety_model
         )
         self.searcher = SearchManager()
         self.rate_limits = defaultdict(list)
-        self.max_retries = 5
-        self.retry_delay = 2
 
-    def check_rate_limit(self, user_id: str):
+    def check_rate_limit(self, user_id: str) -> bool:
         current_time = time.time()
-        self.rate_limits[user_id] = [t for t in self.rate_limits[user_id] if current_time - t < 3600]
+        self.rate_limits[user_id] = [
+            t for t in self.rate_limits[user_id] 
+            if current_time - t < 3600
+        ]
         return len(self.rate_limits[user_id]) < config.rate_limit
 
-    def generate_response(self, prompt: str, context: str, user_id: str):
+    def generate_response(self, prompt: str, context: str, user_id: str) -> str:
         if not self.check_rate_limit(user_id):
             return "⏳ Please wait before asking more questions"
         
-        for attempt in range(self.max_retries):
+        system_prompt = """You are a compassionate relationship expert AI assistant. Your purpose is to:
+        1. Provide thoughtful, empathetic advice about relationships
+        2. Focus on promoting healthy relationship dynamics
+        3. Encourage communication and mutual understanding
+        4. Maintain appropriate boundaries and professionalism
+        5. Refer to serious issues to professional counselors
+
+        Use the provided context to inform your responses while maintaining a supportive tone.
+        """
+        
+        for attempt in range(config.retry_attempts):
             try:
                 response = self.groq_client.chat.completions.create(
                     model="mixtral-8x7b-32768",
-                    messages=[{
-                        "role": "system",
-                        "content": f"Context:\n{context}\nRespond as a compassionate relationship expert."
-                    }, {
-                        "role": "user",
-                        "content": prompt
-                    }],
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"Context:\n{context}\n\nUser Question: {prompt}"}
+                    ],
                     temperature=0.7,
                     max_tokens=500
                 )
                 
                 if not response.choices:
-                    raise ValueError("Empty response from API")
+                    continue
                     
-                output = response.choices[0].message.content
-                if not output.strip():
-                    raise ValueError("Empty content in response")
+                output = response.choices[0].message.content.strip()
+                if not output:
+                    continue
                     
-                return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
-            
+                if self._is_safe(output):
+                    self.rate_limits[user_id].append(time.time())
+                    return output
+                
+                return "🚫 I apologize, but I cannot provide that response. Please rephrase your question."
+                
             except Exception as e:
                 logging.error(f"Generation attempt {attempt+1} failed: {str(e)}")
-                time.sleep(self.retry_delay * (attempt + 1))
+                if attempt < config.retry_attempts - 1:
+                    time.sleep(config.retry_delay * (attempt + 1))
                 
-        return "⚠️ Failed to generate response after multiple attempts"
+        return "⚠️ I'm having trouble generating a response. Please try again in a moment."
 
-    def _is_safe(self, text: str):
+    def _is_safe(self, text: str) -> bool:
         try:
             result = self.safety_checker(text[:512])[0]
             return result["label"] != "LABEL_1" and result["score"] < 0.85
         except Exception as e:
-            logging.error(f"Safety error: {str(e)}")
+            logging.error(f"Safety check error: {str(e)}")
             return False
 
 # =====================
@@ -352,130 +367,210 @@ class WorkflowManager:
         
         return workflow.compile()
 
-    def retrieve_knowledge(self, state: BotState):
+    def retrieve_knowledge(self, state: BotState) -> dict:
         try:
             query = state["messages"][-1]
             context = self.knowledge.search_knowledge(query)
             return {"knowledge_context": "\n".join(context) if context else ""}
         except Exception as e:
-            logging.error(f"Knowledge error: {str(e)}")
+            logging.error(f"Knowledge retrieval error: {str(e)}")
             return {"knowledge_context": ""}
 
-    def retrieve_web(self, state: BotState):
+    def retrieve_web(self, state: BotState) -> dict:
         try:
             results = self.ai.searcher.cached_search(state["messages"][-1])
-            return {"web_context": "\n".join(f"• {r['body']}" for r in results) if results else ""}
+            return {
+                "web_context": "\n".join(
+                    f"• {r['body']}" for r in results
+                ) if results else ""
+            }
         except Exception as e:
-            logging.error(f"Web error: {str(e)}")
+            logging.error(f"Web retrieval error: {str(e)}")
             return {"web_context": ""}
 
-    def generate(self, state: BotState):
+    def generate(self, state: BotState) -> dict:
         full_context = f"""
-        KNOWLEDGE BASE:\n{state['knowledge_context']}
-        WEB CONTEXT:\n{state['web_context']}
+        KNOWLEDGE BASE:
+        {state['knowledge_context']}
+        
+        WEB CONTEXT:
+        {state['web_context']}
         """.strip()
         
-        if not full_context:
-            full_context = "No relevant context found"
+        if not full_context.strip():
+            full_context = "No specific context available. Providing general advice."
             
-        return {"response": self.ai.generate_response(
+        response = self.ai.generate_response(
             prompt=state["messages"][-1],
             context=full_context,
             user_id=state["user_id"]
-        )}
+        )
+        
+        return {"response": response}
 
 # =====================
 # 💻 Streamlit Interface
 # =====================
+
+# Initialize session state
+if "groq_key" not in st.session_state:
+    st.session_state.groq_key = None
+
+with st.sidebar:
+    st.header("🔐 Configuration")
+    groq_key = st.text_input("Enter Groq API Key:", type="password")
+    st.markdown("[Get Groq Key](https://console.groq.com/keys)")
+    
+    if groq_key:
+        try:
+            test_client = Groq(api_key=groq_key)
+            test_client.chat.completions.create(
+                model="mixtral-8x7b-32768",
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=1
+            )
+            st.session_state.groq_key = groq_key
+            
+            st.header("📊 System Status")
+            st.write(f"**Processing Device:** {config.device.upper()}")
+            st.write(f"**Storage Location:** {config.storage_path}")
+            
+        except Exception as e:
+            st.error(f"❌ Invalid API key: {str(e)}")
+            st.session_state.groq_key = None
+            st.stop()
+
+if not st.session_state.groq_key:
+    st.error("Please provide a valid Groq API key to proceed.")
+    st.stop()
+
+# Initialize workflow manager if needed
 if "workflow_manager" not in st.session_state:
     st.session_state.workflow_manager = WorkflowManager()
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Main interface
 st.title("💖 LoveBot: AI Relationship Assistant")
 
 # Custom Knowledge Input
 with st.expander("📥 Add Custom Knowledge"):
-    custom_input = st.text_area("Enter your relationship insight:", 
-                              help="Maximum 10,000 characters", 
-                              key="custom_input")
-    if st.button("💾 Save Permanently"):
-        if custom_input.strip():
-            try:
-                st.session_state.workflow_manager.knowledge.add_knowledge(
-                    text=custom_input,
-                    source_type="user"
-                )
-                st.success("Knowledge added to permanent storage!")
-            except Exception as e:
-                st.error(f"Failed to save: {str(e)}")
-        else:
-            st.warning("Please enter valid text to save")
+    custom_input = st.text_area(
+        "Enter your relationship insight:",
+        help="Share your relationship wisdom (max 10,000 characters)",
+        max_chars=10000,
+        key="custom_input"
+    )
+    
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("💾 Save", use_container_width=True):
+            if custom_input.strip():
+                try:
+                    success = st.session_state.workflow_manager.knowledge.add_knowledge(
+                        text=custom_input,
+                        source_type="user"
+                    )
+                    if success:
+                        st.success("✅ Knowledge saved successfully!")
+                        st.session_state.custom_input = ""
+                    else:
+                        st.error("Failed to save knowledge")
+                except Exception as e:
+                    st.error(f"Error saving knowledge: {str(e)}")
+            else:
+                st.warning("Please enter valid text to save")
 
 # Chat Interface
-for role, text in st.session_state.messages:
-    avatar = "💬" if role == "user" else "💖"
-    with st.chat_message(role, avatar=avatar):
-        st.write(text)
+chat_container = st.container()
+with chat_container:
+    for role, text in st.session_state.messages:
+        avatar = "👤" if role == "user" else "💖"
+        with st.chat_message(role, avatar=avatar):
+            st.write(text)
 
-if prompt := st.chat_input("Ask about relationships..."):
+if prompt := st.chat_input("Ask about relationships...", key="chat_input"):
     st.session_state.messages.append(("user", prompt))
     
-    try:
-        with st.status("💞 Analyzing relationship patterns...", expanded=True) as status:
-            try:
-                st.write("🔍 Searching knowledge base...")
-                result = st.session_state.workflow_manager.workflow.invoke({
-                    "messages": [m[1] for m in st.session_state.messages],
-                    "knowledge_context": "",
-                    "web_context": "",
-                    "user_id": st.session_state.user_id
-                })
-                
-                if not result.get("response") or not result["response"].strip():
-                    raise ValueError("Empty AI response")
-                    
+    with st.status("💞 Processing your question...", expanded=True) as status:
+        try:
+            status.write("🔍 Searching knowledge base...")
+            result = st.session_state.workflow_manager.workflow.invoke({
+                "messages": [m[1] for m in st.session_state.messages],
+                "knowledge_context": "",
+                "web_context": "",
+                "user_id": st.session_state.user_id
+            })
+            
+            if result.get("response"):
                 st.session_state.messages.append(("assistant", result["response"]))
-                status.update(label="✅ Analysis complete", state="complete")
+                status.update(label="✅ Response ready", state="complete")
+            else:
+                status.update(label="❌ No response generated", state="error")
+                st.error("Failed to generate response. Please try again.")
                 
-            except Exception as e:
-                status.update(label="❌ Analysis failed", state="error")
-                st.error(f"Processing error: {str(e)}")
-                logging.error(traceback.format_exc())
-                
-    except Exception as fatal_error:
-        st.error(f"Critical system failure: {str(fatal_error)}")
-        logging.critical(traceback.format_exc())
+        except Exception as e:
+            status.update(label="❌ Error processing request", state="error")
+            st.error(f"An error occurred: {str(e)}")
+            logging.error(traceback.format_exc())
     
     st.rerun()
 
 # Additional Features
-with st.expander("📖 Story Assistance"):
-    story_prompt = st.text_area("Start your relationship story:")
-    if st.button("Continue Story"):
-        with st.spinner("Crafting your story..."):
-            response = st.session_state.workflow_manager.ai.generate_response(
-                prompt=f"Continue this story positively: {story_prompt}",
-                context="",
-                user_id=st.session_state.user_id
-            )
-            st.write(response)
-
-with st.expander("🔍 Research Assistant"):
-    research_query = st.text_input("Enter research topic:")
-    if st.button("Learn About This"):
-        with st.spinner("Researching..."):
-            try:
-                results = st.session_state.workflow_manager.ai.searcher.cached_search(research_query)
-                for result in results:
-                    st.session_state.workflow_manager.knowledge.add_knowledge(
-                        f"{result['title']}: {result['body']}",
-                        "web_research"
+with st.expander("🎯 Relationship Goals"):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📝 Story Assistant")
+        story_prompt = st.text_area(
+            "Share your relationship story or scenario:",
+            key="story_input"
+        )
+        if st.button("✨ Get Insight", key="story_button"):
+            if story_prompt:
+                with st.spinner("Analyzing your story..."):
+                    response = st.session_state.workflow_manager.ai.generate_response(
+                        prompt=f"Analyze this relationship situation and provide constructive advice: {story_prompt}",
+                        context="",
+                        user_id=st.session_state.user_id
                     )
-                st.success(f"Added {len(results)} entries about {research_query}")
-            except Exception as e:
-                st.error("Research failed. Please try again later.")
-                logging.error(traceback.format_exc())
+                    st.write(response)
+            else:
+                st.warning("Please enter a story or scenario first")
+    
+    with col2:
+        st.subheader("🔍 Research Topics")
+        research_query = st.text_input(
+            "Enter a relationship topic to learn more about:",
+            key="research_input"
+        )
+        if st.button("📚 Research", key="research_button"):
+            if research_query:
+                with st.spinner("Researching..."):
+                    try:
+                        results = st.session_state.workflow_manager.ai.searcher.cached_search(research_query)
+                        if results:
+                            for result in results:
+                                st.session_state.workflow_manager.knowledge.add_knowledge(
+                                    f"{result['title']}: {result['body']}",
+                                    "web_research"
+                                )
+                            st.success(f"Added {len(results)} new insights about {research_query}")
+                        else:
+                            st.info("No new information found for this topic")
+                    except Exception as e:
+                        st.error("Research failed. Please try again later.")
+                        logging.error(traceback.format_exc())
+            else:
+                st.warning("Please enter a topic to research")
+
+# Footer
+st.markdown("---")
+st.markdown(
+    "💝 **LoveBot** - Your AI Relationship Assistant | "
+    "Built with care to help nurture healthy relationships"
+)
