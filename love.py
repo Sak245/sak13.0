@@ -12,6 +12,8 @@ import tempfile
 import torch
 import transformers
 import fitz
+from cassandra.cluster import Cluster
+from cassandra.auth import PlainTextAuthProvider
 
 # Workaround for Streamlit watcher bug
 sys.modules['torch.classes'] = None
@@ -25,15 +27,12 @@ transformers.logging.set_verbosity_error()
 # =====================
 import streamlit as st
 from langgraph.graph import StateGraph, END
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import PointStruct, VectorParams, Distance, Filter
 from langchain_huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import uuid
 from typing import TypedDict, List
 from duckduckgo_search import DDGS
 from transformers import pipeline as transformers_pipeline
-import sqlite3
 import time
 from pathlib import Path
 import logging
@@ -48,17 +47,6 @@ import re
 # =====================
 class Config:
     def __init__(self):
-        if 'HOSTNAME' in os.environ and 'streamlit' in os.environ['HOSTNAME']:
-            base_dir = Path(tempfile.mkdtemp())
-            self.qdrant_path = base_dir / "qdrant_storage"
-            self.storage_path = base_dir / "knowledge_storage"
-        else:
-            self.qdrant_path = Path("qdrant_storage")
-            self.storage_path = Path("knowledge_storage")
-        
-        self.qdrant_path.mkdir(parents=True, exist_ok=True)
-        self.storage_path.mkdir(parents=True, exist_ok=True)
-        
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
@@ -97,7 +85,6 @@ with st.sidebar:
     
     st.header("📊 System Status")
     st.write(f"**Processing Device:** {config.device.upper()}")
-    st.write(f"**Storage Location:** {config.storage_path}")
 
 if not groq_key:
     st.error("Please provide the Groq API key to proceed.")
@@ -115,7 +102,7 @@ except Exception as e:
     st.stop()
 
 # =====================
-# 📚 Enhanced Knowledge Management
+# 📚 Astra DB Knowledge Management
 # =====================
 class KnowledgeManager:
     def __init__(self):
@@ -124,55 +111,25 @@ class KnowledgeManager:
             encode_kwargs={'normalize_embeddings': True}
         )
         
-        self.client = QdrantClient(
-            path=str(config.qdrant_path),
-            prefer_grpc=False
-        )
-        self._init_collection()
-        self._init_sqlite()
-        self._ensure_persistence()
+        self.cluster = Cluster(["your_astra_db_endpoint"], 
+                             auth_provider=PlainTextAuthProvider('your_client_id', 'your_client_secret'))
+        self.session = self.cluster.connect()
+        self._init_db()
 
-    def _init_collection(self):
-        try:
-            if not self.client.collection_exists("lovebot_knowledge"):
-                self.client.create_collection(
-                    collection_name="lovebot_knowledge",
-                    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-                )
-        except Exception as e:
-            logging.error(f"Collection error: {str(e)}")
-
-    def _init_sqlite(self):
-        try:
-            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS knowledge_entries (
-                        id TEXT PRIMARY KEY,
-                        text TEXT UNIQUE,
-                        source_type TEXT,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-        except Exception as e:
-            logging.error(f"Database error: {str(e)}")
-
-    def _ensure_persistence(self):
-        try:
-            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
-                cur = conn.execute("SELECT COUNT(*) FROM knowledge_entries")
-                if cur.fetchone()[0] == 0:
-                    self._seed_initial_data()
-        except Exception as e:
-            self._seed_initial_data()
-
-    def _seed_initial_data(self):
-        initial_data = [
-            ("Love requires trust and communication", "seed"),
-            ("Healthy relationships need boundaries", "seed"),
-            ("Conflict resolution is key for lasting relationships", "seed")
-        ]
-        for text, source in initial_data:
-            self.add_knowledge(text, source)
+    def _init_db(self):
+        self.session.execute("""
+            CREATE KEYSPACE IF NOT EXISTS lovebot 
+            WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
+        """)
+        self.session.execute("""
+            CREATE TABLE IF NOT EXISTS lovebot.knowledge (
+                id UUID PRIMARY KEY,
+                text TEXT,
+                embedding LIST<FLOAT>,
+                source_type TEXT,
+                created_at TIMESTAMP
+            )
+        """)
 
     def _pdf_to_text(self, pdf_bytes: bytes) -> List[str]:
         try:
@@ -242,48 +199,35 @@ class KnowledgeManager:
 
     def _add_single_knowledge(self, text: str, source_type: str):
         embedding = self.embeddings.embed_query(text)
-        point_id = str(uuid.uuid4())
+        point_id = uuid.uuid4()
         
-        if isinstance(embedding, list):
-            embedding = np.array(embedding)
-        
-        self.client.upsert(
-            collection_name="lovebot_knowledge",
-            points=[PointStruct(
-                id=point_id,
-                vector=embedding.tolist(),
-                payload={"text": text, "source": source_type}
-            )]
+        self.session.execute(
+            """
+            INSERT INTO lovebot.knowledge (id, text, embedding, source_type, created_at)
+            VALUES (%s, %s, %s, %s, toTimestamp(now()))
+            """,
+            (point_id, text, embedding, source_type)
         )
-        
-        with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
-            conn.execute(
-                "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (point_id, text, source_type)
-            )
 
     def search_knowledge(self, query: str, limit=3) -> List[str]:
         try:
-            embedding = self.embeddings.embed_query(query)
-            if isinstance(embedding, list):
-                embedding = np.array(embedding)
-                
-            results = self.client.search(
-                collection_name="lovebot_knowledge",
-                query_vector=embedding.tolist(),
-                limit=limit,
-                query_filter=Filter(
-                    must=[{"key": "source", "match": {"any": ["seed", "user", "pdf"]}}]
-                ),
-                score_threshold=0.3
+            query_embedding = self.embeddings.embed_query(query)
+            results = self.session.execute(
+                """
+                SELECT text, embedding 
+                FROM lovebot.knowledge 
+                ORDER BY cosine_similarity(embedding, %s) DESC 
+                LIMIT %s
+                """,
+                (query_embedding, limit)
             )
-            return [r.payload.get("text", "") for r in results if r.payload]
+            return [row.text for row in results]
         except Exception as e:
             logging.error(f"Search error: {str(e)}")
             return []
 
 # =====================
-# 🔍 Enhanced Search Management
+# 🔍 Search Management
 # =====================
 class SearchManager:
     @lru_cache(maxsize=100)
@@ -297,7 +241,7 @@ class SearchManager:
             return []
 
 # =====================
-# 🧠 Robust AI Service
+# 🧠 AI Service
 # =====================
 class AIService:
     def __init__(self, api_key: str):
@@ -327,9 +271,9 @@ class AIService:
                     model="mixtral-8x7b-32768",
                     messages=[{
                         "role": "system",
-                        "content": f"""You are a compassionate relationship expert. Use this context if relevant:
+                        "content": f"""You are a compassionate relationship expert. Use this context:
                         {context}
-                        Always provide thoughtful, empathetic advice. If no context matches, draw from your training."""
+                        Provide thoughtful, empathetic advice."""
                     }, {
                         "role": "user",
                         "content": prompt
@@ -343,39 +287,13 @@ class AIService:
                 if not output or len(output) < 20:
                     raise ValueError("Empty response")
                     
-                return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
+                return output if self._is_safe(output) else "🚫 Response blocked"
             
             except Exception as e:
                 logging.error(f"Attempt {attempt+1} failed: {str(e)}")
                 time.sleep(self.retry_delay * (attempt + 1))
                 
-        return self._fallback_response(prompt)
-
-    def _is_safe(self, text: str) -> bool:
-        try:
-            chunks = [text[i:i+512] for i in range(0, len(text), 512)]
-            for chunk in chunks:
-                result = self.safety_checker(chunk)[0]
-                if result["label"] == "LABEL_1" and result["score"] >= 0.85:
-                    return False
-            return True
-        except Exception as e:
-            logging.error(f"Safety error: {str(e)}")
-            return False
-
-    def _fallback_response(self, prompt: str) -> str:
-        try:
-            return self.groq_client.chat.completions.create(
-                model="mixtral-8x7b-32768",
-                messages=[{
-                    "role": "user",
-                    "content": prompt
-                }],
-                temperature=0.7,
-                max_tokens=300
-            ).choices[0].message.content
-        except Exception as e:
-            return "I believe open communication and mutual understanding are key to healthy relationships. Could you share more details?"
+        return "I believe understanding and communication are key. Could you elaborate?"
 
 # =====================
 # 🤖 Workflow Management
@@ -447,14 +365,10 @@ if "user_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# PDF Upload Sidebar
+# PDF Upload
 with st.sidebar:
     st.header("📥 Knowledge Upload")
-    uploaded_file = st.file_uploader(
-        "Upload relationship PDF guide",
-        type=["pdf"],
-        help="Max 10MB per file"
-    )
+    uploaded_file = st.file_uploader("Upload relationship PDF", type=["pdf"])
     
     if uploaded_file:
         with st.spinner("Processing PDF..."):
@@ -466,9 +380,6 @@ with st.sidebar:
                 st.success(f"Added {num_chunks} knowledge chunks!")
             except Exception as e:
                 st.error(f"PDF error: {str(e)}")
-
-    st.header("🔍 Web Search Settings")
-    st.checkbox("Enable web search", value=True, key="web_search")
 
 # Chat Interface
 st.title("💖 LoveBot: AI Relationship Assistant")
@@ -491,15 +402,12 @@ if prompt := st.chat_input("Ask about relationships..."):
                     "user_id": st.session_state.user_id
                 })
                 
-                response = result.get("response", "Could you clarify?")
-                if not response.strip():
-                    response = self.ai._fallback_response(prompt)
-                    
+                response = result.get("response", "Could you clarify?")                
                 st.session_state.messages.append(("assistant", response))
                 status.update(label="✅ Done", state="complete")
                 
             except Exception as e:
-                st.session_state.messages.append(("assistant", "Let's focus on understanding each other. Could you rephrase your question?"))
+                st.session_state.messages.append(("assistant", "Let's focus on understanding each other. Could you rephrase?"))
                 status.update(label="❌ Failed", state="error")
                 logging.error(traceback.format_exc())
                 
