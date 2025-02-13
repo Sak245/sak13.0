@@ -1,3 +1,6 @@
+import sys
+sys.modules['torch.classes'] = None  # Critical Torch workaround
+
 import warnings
 import os
 import tempfile
@@ -20,11 +23,7 @@ import torch
 import numpy as np
 from collections import defaultdict
 import traceback
-import sys
 import re
-
-# Workaround for Streamlit watcher bug
-sys.modules['torch.classes'] = None
 
 # Configure environment
 warnings.filterwarnings("ignore")
@@ -94,7 +93,7 @@ class KnowledgeManager:
                     vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                 )
         except Exception as e:
-            logging.error(f"Collection initialization error: {str(e)}")
+            logging.error(f"Collection init error: {str(e)}")
             raise RuntimeError("Failed to initialize knowledge base")
 
     def _init_sqlite(self):
@@ -111,10 +110,11 @@ class KnowledgeManager:
                 """)
                 conn.commit()
         except Exception as e:
-            logging.error(f"Database initialization error: {str(e)}")
+            logging.error(f"Database init error: {str(e)}")
             raise RuntimeError("Failed to initialize database")
 
     def _ensure_persistence(self):
+        """Ensure initial data exists in database"""
         try:
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM knowledge_entries")
@@ -125,9 +125,11 @@ class KnowledgeManager:
             self._seed_initial_data()
 
     def _seed_initial_data(self):
+        """Add default relationship knowledge"""
         initial_data = [
-            ("Healthy relationships require trust and communication", "seed"),
-            ("Setting boundaries is essential for relationship health", "seed")
+            ("Healthy communication is the foundation of strong relationships", "seed"),
+            ("Respecting boundaries builds trust in relationships", "seed"),
+            ("Conflict resolution requires empathy and active listening", "seed")
         ]
         for text, source in initial_data:
             try:
@@ -234,18 +236,20 @@ class AIService:
                     max_tokens=500
                 )
                 
-                if response.choices:
-                    output = response.choices[0].message.content.strip()
-                    if output:
-                        self.rate_limits[user_id].append(time.time())
-                        return output
-                
-                if attempt < config.retry_attempts - 1:
-                    time.sleep(config.retry_delay)
+                if not response.choices:
+                    raise ValueError("Empty API response")
                     
+                output = response.choices[0].message.content.strip()
+                if not output:
+                    raise ValueError("Empty content in response")
+                
+                self.rate_limits[user_id].append(time.time())
+                return output
+                
             except Exception as e:
-                logging.error(f"Generation error: {str(e)}")
-                time.sleep(config.retry_delay * (attempt + 1))
+                logging.error(f"Generation attempt {attempt+1} failed: {str(e)}")
+                if attempt < config.retry_attempts - 1:
+                    time.sleep(config.retry_delay * (attempt + 1))
         
         return "⚠️ Please try your question again"
 
@@ -428,3 +432,15 @@ with chat_container:
 
 st.markdown("---")
 st.markdown("💝 **LoveBot** - Your AI Relationship Assistant")
+
+# requirements.txt content
+"""
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.0
+streamlit==1.42.0
+langchain-community==0.2.0
+qdrant-client==1.9.2
+sentence-transformers==3.0.0
+duckduckgo-search==4.1.0
+groq==0.3.2
+rich==13.7.1
