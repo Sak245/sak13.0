@@ -29,7 +29,7 @@ sys.modules['torch.classes'] = None
 
 # Configure environment
 warnings.filterwarnings("ignore")
-os.environ["TOKENIZERS_PARALLELISM"] = "false"]
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.set_default_dtype(torch.float32)
 
 # Configure logging
