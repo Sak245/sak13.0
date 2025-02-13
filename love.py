@@ -15,7 +15,7 @@ import fitz  # PyMuPDF for PDF processing
 
 # Workaround for Streamlit watcher bug
 sys.modules['torch.classes'] = None
-torch._dynamo.config.suppress_errors = True
+torch._dynamyyo.config.suppress_errors = True
 
 # Configure transformers logging
 transformers.logging.set_verbosity_error()
@@ -268,7 +268,7 @@ class KnowledgeManager:
             if isinstance(embedding, list):
                 embedding = np.array(embedding)
                 
-            results = self.client.query_points(
+            results = self.client.search(
                 collection_name="lovebot_knowledge",
                 query_vector=embedding.tolist(),
                 limit=limit,
@@ -327,9 +327,9 @@ class AIService:
                     model="mixtral-8x7b-32768",
                     messages=[{
                         "role": "system",
-                        "content": f"""You're a compassionate relationship expert. Context:
+                        "content": f"""You're a compassionate relationship expert. Use this context if relevant:
                         {context}
-                        Respond helpfully even without context."""
+                        If no context matches, use your general knowledge. Always provide helpful advice."""
                     }, {
                         "role": "user",
                         "content": prompt
@@ -343,7 +343,7 @@ class AIService:
                 if not output or len(output) < 20:
                     raise ValueError("Empty response")
                     
-                return output if self._is_safe(output) else "🚫 Response blocked"
+                return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
             
             except Exception as e:
                 logging.error(f"Attempt {attempt+1} failed: {str(e)}")
@@ -365,14 +365,17 @@ class AIService:
 
     def _fallback_response(self, prompt: str) -> str:
         try:
-            results = self.searcher.cached_search(prompt)
-            if results:
-                return f"Some resources:\n" + "\n".join(
-                    f"- {r['title']}: {r['content'][:200]}" for r in results
-                )
-            return "Could you rephrase your question?"
+            return self.groq_client.chat.completions.create(
+                model="mixtral-8x7b-32768",
+                messages=[{
+                    "role": "user",
+                    "content": prompt
+                }],
+                temperature=0.7,
+                max_tokens=300
+            ).choices[0].message.content
         except Exception as e:
-            return "Please try again later."
+            return "I'm having trouble finding information. Here's general advice: Communication and mutual understanding are key to healthy relationships."
 
 # =====================
 # 🤖 Workflow Management
@@ -407,23 +410,23 @@ class WorkflowManager:
         try:
             query = state["messages"][-1]
             context = self.knowledge.search_knowledge(query)
-            return {"knowledge_context": "\n".join(context) if context else ""}
+            return {"knowledge_context": "\n".join(context) if context else "No relevant knowledge found"}
         except Exception as e:
-            return {"knowledge_context": ""}
+            return {"knowledge_context": "Knowledge base unavailable"}
 
     def retrieve_web(self, state: BotState) -> dict:
         try:
             results = self.ai.searcher.cached_search(state["messages"][-1])
             return {"web_context": "\n".join(
                 f"• {r['title']}: {r['content'][:200]}" for r in results
-            ) if results else ""}
+            ) if results else "No web results found"}
         except Exception as e:
-            return {"web_context": ""}
+            return {"web_context": "Web search unavailable"}
 
     def generate(self, state: BotState) -> dict:
         full_context = f"""
-        KNOWLEDGE BASE:\n{state['knowledge_context'] or 'No knowledge found'}
-        WEB RESULTS:\n{state['web_context'] or 'No web results'}
+        KNOWLEDGE BASE:\n{state['knowledge_context']}
+        WEB RESULTS:\n{state['web_context']}
         """.strip()
             
         return {"response": self.ai.generate_response(
@@ -490,18 +493,18 @@ if prompt := st.chat_input("Ask about relationships..."):
                 
                 response = result.get("response", "Could you clarify?")
                 if not response.strip():
-                    response = "Still learning, please ask differently."
+                    response = self.ai._fallback_response(prompt)
                     
                 st.session_state.messages.append(("assistant", response))
                 status.update(label="✅ Done", state="complete")
                 
             except Exception as e:
-                st.session_state.messages.append(("assistant", "Temporarily unavailable"))
+                st.session_state.messages.append(("assistant", "I'm having trouble responding. Here's general advice: Open communication is vital in relationships."))
                 status.update(label="❌ Failed", state="error")
                 logging.error(traceback.format_exc())
                 
     except Exception as fatal_error:
-        st.session_state.messages.append(("assistant", "Let's try again!"))
+        st.session_state.messages.append(("assistant", "Let's try again! Please rephrase your question."))
         logging.critical(traceback.format_exc())
     
     st.rerun()
