@@ -103,8 +103,8 @@ class KnowledgeManager:
             try:
                 self.add_knowledge(text, source)
             except Exception as e:
-                logging.error(f"Failed to seed entry: {text}. 
-Error: {str(e)}")
+                logging.error(f"Failed to seed entry: {text}.) 
+Error: ({str(e)}")
                 
     def add_knowledge(self, text: str, source_type: str) -> bool:
         try:
