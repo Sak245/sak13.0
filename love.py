@@ -1,5 +1,5 @@
 import sys
-sys.modules['torch.classes'] = None  # Critical Torch workaround - MUST BE FIRST
+sys.modules['torch.classes'] = None  # Must be first to prevent Torch monitoring issues
 
 import warnings
 import os
@@ -39,26 +39,20 @@ logging.basicConfig(
 
 class Config:
     def __init__(self):
-        if 'HOSTNAME' in os.environ and 'streamlit' in os.environ['HOSTNAME']:
-            base_dir = Path(tempfile.mkdtemp())
-            self.qdrant_path = base_dir / "qdrant_storage"
-            self.storage_path = base_dir / "knowledge_storage"
-        else:
-            self.qdrant_path = Path("qdrant_storage")
-            self.storage_path = Path("knowledge_storage")
-            
+        self.qdrant_path = Path("qdrant_storage")
+        self.storage_path = Path("knowledge_storage")
         self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.device = "cpu"
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
-        self.rate_limit = 30  # Reduced for safety
+        self.rate_limit = 30  # Conservative rate limit
         self.max_text_length = 1000
-        self.retry_attempts = 5  # Increased retries
+        self.retry_attempts = 5
         self.retry_delay = 2
 
 config = Config()
 
-# Singleton Qdrant client management
+# Singleton Qdrant client to prevent locking issues
 def get_qdrant_client():
     if 'qdrant_client' not in st.session_state:
         try:
@@ -68,8 +62,8 @@ def get_qdrant_client():
             )
             logging.info("Qdrant client initialized successfully")
         except Exception as e:
-            logging.error(f"Qdrant client initialization failed: {str(e)}")
-            raise RuntimeError("Failed to initialize vector database")
+            logging.error(f"Qdrant initialization failed: {str(e)}")
+            raise RuntimeError("Vector database connection failed")
     return st.session_state.qdrant_client
 
 # Streamlit Configuration
@@ -106,7 +100,7 @@ class KnowledgeManager:
                 logging.info("Created new Qdrant collection")
         except Exception as e:
             logging.error(f"Collection init error: {str(e)}")
-            raise RuntimeError("Failed to initialize knowledge base")
+            raise RuntimeError("Knowledge base initialization failed")
 
     def _init_sqlite(self):
         try:
@@ -124,7 +118,7 @@ class KnowledgeManager:
             logging.info("Initialized SQLite database")
         except Exception as e:
             logging.error(f"Database init error: {str(e)}")
-            raise RuntimeError("Failed to initialize database")
+            raise RuntimeError("Database initialization failed")
 
     def _ensure_persistence(self):
         """Ensure initial data exists in database"""
@@ -225,13 +219,13 @@ class AIService:
         if not self.check_rate_limit(user_id):
             return "⏳ Please wait before asking more questions"
         
-        # Rate limit throttling
+        # Rate limiting throttle
         time_since_last = time.time() - self.last_request
         if time_since_last < 1.0:
             time.sleep(1.0 - time_since_last)
             
         system_prompt = """You are a relationship expert. Provide advice using:
-        1. Knowledge base context when available
+        1. Available knowledge base context
         2. Web research when needed
         3. Clear source attribution
         4. Supportive, professional tone"""
@@ -246,7 +240,7 @@ class AIService:
                     ],
                     temperature=0.7,
                     max_tokens=500,
-                    timeout=30  # Added timeout
+                    timeout=30
                 )
                 
                 if not response.choices:
@@ -276,9 +270,13 @@ class BotState(TypedDict):
 
 class WorkflowManager:
     def __init__(self):
-        self.knowledge = KnowledgeManager()
-        self.ai = AIService()
-        self.workflow = self._build_workflow()
+        try:
+            self.knowledge = KnowledgeManager()
+            self.ai = AIService()
+            self.workflow = self._build_workflow()
+        except Exception as e:
+            logging.error(f"Workflow initialization failed: {str(e)}")
+            raise
 
     def _build_workflow(self):
         workflow = StateGraph(BotState)
@@ -342,8 +340,7 @@ class WorkflowManager:
         )
         return {"response": response}
 
-# Streamlit App Initialization
-def initialize_session_state():
+def initialize_session():
     required_keys = {
         'groq_key': None,
         'workflow_manager': None,
@@ -356,9 +353,8 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = default
 
-# Main App
 def main():
-    initialize_session_state()
+    initialize_session()
 
     with st.sidebar:
         st.header("🔐 Configuration")
@@ -386,16 +382,15 @@ def main():
         st.error("Please provide a valid Groq API key to proceed.")
         st.stop()
 
-    if not st.session_state.workflow_manager:
-        try:
+    try:
+        if not st.session_state.workflow_manager:
             st.session_state.workflow_manager = WorkflowManager()
-        except RuntimeError as e:
-            st.error(f"Failed to initialize application: {str(e)}")
-            st.stop()
+    except Exception as e:
+        st.error(f"Application initialization failed: {str(e)}")
+        st.stop()
 
     st.title("💖 LoveBot: AI Relationship Assistant")
 
-    # Custom Knowledge Input
     with st.expander("📥 Add Custom Knowledge", expanded=False):
         custom_input = st.text_area(
             "Enter your relationship insight:",
@@ -426,7 +421,6 @@ def main():
                 else:
                     st.warning("Please enter valid text to save")
 
-    # Chat Interface
     chat_container = st.container()
     with chat_container:
         for role, text in st.session_state.messages:
@@ -456,7 +450,7 @@ def main():
                         
                 except Exception as e:
                     status.update(label="❌ Error processing request", state="error")
-                    st.error(f"An error occurred: {str(e)}")
+                    st.error(f"Application error: {str(e)}")
                     logging.error(traceback.format_exc())
             st.rerun()
 
