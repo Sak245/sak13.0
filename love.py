@@ -1,6 +1,7 @@
 # Add at the very top before other imports
 import sys
 sys.modules['torch.classes'] = None  # Fix Streamlit watcher bug
+from functools import lru_cache
 
 # =====================
 # 🛠️ Initial Configuration
@@ -63,7 +64,7 @@ class Config:
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 50
         self.max_text_length = 1000
-        self.pdf_chunk_size = 500  # Characters per chunk
+        self.pdf_chunk_size = 500
         
         self._validate()
         
@@ -87,7 +88,34 @@ st.write("""
 """, unsafe_allow_html=True)
 
 # =====================
-# 📚 Knowledge Management (Enhanced with PDF Support)
+# 🔑 API Key Handling
+# =====================
+with st.sidebar:
+    st.header("🔐 Configuration")
+    groq_key = st.text_input("Enter Groq API Key:", type="password")
+    st.markdown("[Get Groq Key](https://console.groq.com/keys)")
+    
+    st.header("📊 System Status")
+    st.write(f"**Processing Device:** {config.device.upper()}")
+    st.write(f"**Storage Location:** {config.storage_path}")
+
+if not groq_key:
+    st.error("Please provide the Groq API key to proceed.")
+    st.stop()
+
+try:
+    test_client = Groq(api_key=groq_key)
+    test_client.chat.completions.create(
+        model="mixtral-8x7b-32768",
+        messages=[{"role": "user", "content": "test"}],
+        max_tokens=1
+    )
+except Exception as e:
+    st.error(f"❌ Invalid API key: {str(e)}")
+    st.stop()
+
+# =====================
+# 📚 Knowledge Management
 # =====================
 class KnowledgeManager:
     def __init__(self):
@@ -113,7 +141,6 @@ class KnowledgeManager:
                 )
         except Exception as e:
             logging.error(f"Collection error: {str(e)}")
-            st.error("Failed to initialize knowledge base")
 
     def _init_sqlite(self):
         try:
@@ -136,7 +163,6 @@ class KnowledgeManager:
                 if cur.fetchone()[0] == 0:
                     self._seed_initial_data()
         except Exception as e:
-            logging.error(f"Persistence check failed: {str(e)}")
             self._seed_initial_data()
 
     def _seed_initial_data(self):
@@ -149,24 +175,20 @@ class KnowledgeManager:
             self.add_knowledge(text, source)
 
     def _pdf_to_text(self, pdf_bytes: bytes) -> List[str]:
-        """Extract and clean text from PDF bytes"""
         try:
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             text = ""
             for page in doc:
                 text += page.get_text("text") + "\n"
-            
-            # Clean text
-            text = re.sub(r'\s+', ' ', text)  # Remove excessive whitespace
-            text = re.sub(r'\n{3,}', '\n\n', text)  # Normalize newlines
+            text = re.sub(r'\s+', ' ', text)
+            text = re.sub(r'\n{3,}', '\n\n', text)
             return self._chunk_text(text)
         except Exception as e:
-            logging.error(f"PDF processing error: {str(e)}")
+            logging.error(f"PDF error: {str(e)}")
             return []
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Smart text chunking with overlap and structure preservation"""
-        paragraphs = re.split(r'\n\s*\n', text)  # Split on paragraph breaks
+        paragraphs = re.split(r'\n\s*\n', text)
         chunks = []
         current_chunk = []
         current_length = 0
@@ -185,7 +207,6 @@ class KnowledgeManager:
                     current_chunk = [para]
                     current_length = len(para)
                 else:
-                    # Handle very long paragraphs
                     sub_paras = re.split(r'(?<=[.!?]) +', para)
                     for sub_para in sub_paras:
                         if len(sub_para) > config.max_text_length:
@@ -207,17 +228,16 @@ class KnowledgeManager:
             for chunk in chunks:
                 self._add_single_knowledge(chunk, source_type)
         except Exception as e:
-            logging.error(f"Add knowledge error: {str(e)}")
-            raise
+            logging.error(f"Add error: {str(e)}")
 
-    def add_pdf_knowledge(self, pdf_bytes: bytes, source_name: str):
+    def add_pdf_knowledge(self, pdf_bytes: bytes, source_name: str) -> int:
         try:
             chunks = self._pdf_to_text(pdf_bytes)
             for chunk in chunks:
                 self._add_single_knowledge(chunk, f"pdf:{source_name}")
             return len(chunks)
         except Exception as e:
-            logging.error(f"PDF upload error: {str(e)}")
+            logging.error(f"PDF add error: {str(e)}")
             return 0
 
     def _add_single_knowledge(self, text: str, source_type: str):
@@ -273,15 +293,15 @@ class SearchManager:
                 results = ddgs.text(query, max_results=3)
                 return [{"title": r["title"], "content": r["body"]} for r in results]
         except Exception as e:
-            logging.error(f"Web search error: {str(e)}")
+            logging.error(f"Search error: {str(e)}")
             return []
 
 # =====================
-# 🧠 AI Service (Enhanced Safety and Reliability)
+# 🧠 AI Service
 # =====================
 class AIService:
-    def __init__(self):
-        self.groq_client = Groq(api_key=st.secrets.get("GROQ_API_KEY", ""))
+    def __init__(self, api_key: str):
+        self.groq_client = Groq(api_key=api_key)
         self.safety_checker = transformers_pipeline(
             "text-classification", 
             model=config.safety_model,
@@ -307,9 +327,9 @@ class AIService:
                     model="mixtral-8x7b-32768",
                     messages=[{
                         "role": "system",
-                        "content": f"""You're a compassionate relationship expert. Use this context if relevant:
+                        "content": f"""You're a compassionate relationship expert. Context:
                         {context}
-                        If no context matches, use your general knowledge."""
+                        Respond helpfully even without context."""
                     }, {
                         "role": "user",
                         "content": prompt
@@ -323,7 +343,7 @@ class AIService:
                 if not output or len(output) < 20:
                     raise ValueError("Empty response")
                     
-                return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
+                return output if self._is_safe(output) else "🚫 Response blocked"
             
             except Exception as e:
                 logging.error(f"Attempt {attempt+1} failed: {str(e)}")
@@ -344,17 +364,15 @@ class AIService:
             return False
 
     def _fallback_response(self, prompt: str) -> str:
-        """Generate response using web search when LLM fails"""
         try:
             results = self.searcher.cached_search(prompt)
             if results:
-                return f"I found these resources that might help:\n" + "\n".join(
+                return f"Some resources:\n" + "\n".join(
                     f"- {r['title']}: {r['content'][:200]}" for r in results
                 )
-            return "I'm having trouble finding information. Could you rephrase your question?"
+            return "Could you rephrase your question?"
         except Exception as e:
-            logging.error(f"Fallback failed: {str(e)}")
-            return "I'm currently unable to respond. Please try again later."
+            return "Please try again later."
 
 # =====================
 # 🤖 Workflow Management
@@ -366,9 +384,9 @@ class BotState(TypedDict):
     user_id: str
 
 class WorkflowManager:
-    def __init__(self):
+    def __init__(self, api_key: str):
         self.knowledge = KnowledgeManager()
-        self.ai = AIService()
+        self.ai = AIService(api_key=api_key)
         self.workflow = self._build_workflow()
 
     def _build_workflow(self):
@@ -391,7 +409,6 @@ class WorkflowManager:
             context = self.knowledge.search_knowledge(query)
             return {"knowledge_context": "\n".join(context) if context else ""}
         except Exception as e:
-            logging.error(f"Knowledge error: {str(e)}")
             return {"knowledge_context": ""}
 
     def retrieve_web(self, state: BotState) -> dict:
@@ -401,13 +418,12 @@ class WorkflowManager:
                 f"• {r['title']}: {r['content'][:200]}" for r in results
             ) if results else ""}
         except Exception as e:
-            logging.error(f"Web error: {str(e)}")
             return {"web_context": ""}
 
     def generate(self, state: BotState) -> dict:
         full_context = f"""
-        KNOWLEDGE BASE:\n{state['knowledge_context'] or 'No relevant knowledge found'}
-        WEB RESULTS:\n{state['web_context'] or 'No web results available'}
+        KNOWLEDGE BASE:\n{state['knowledge_context'] or 'No knowledge found'}
+        WEB RESULTS:\n{state['web_context'] or 'No web results'}
         """.strip()
             
         return {"response": self.ai.generate_response(
@@ -419,8 +435,9 @@ class WorkflowManager:
 # =====================
 # 💻 Streamlit Interface
 # =====================
-if "workflow_manager" not in st.session_state:
-    st.session_state.workflow_manager = WorkflowManager()
+if "workflow_manager" not in st.session_state or st.session_state.groq_key != groq_key:
+    st.session_state.groq_key = groq_key
+    st.session_state.workflow_manager = WorkflowManager(groq_key)
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
@@ -433,7 +450,6 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Upload relationship PDF guide",
         type=["pdf"],
-        key="pdf_uploader",
         help="Max 10MB per file"
     )
     
@@ -444,14 +460,14 @@ with st.sidebar:
                     uploaded_file.getvalue(),
                     uploaded_file.name
                 )
-                st.success(f"Added {num_chunks} knowledge chunks from PDF!")
+                st.success(f"Added {num_chunks} knowledge chunks!")
             except Exception as e:
-                st.error(f"PDF processing failed: {str(e)}")
+                st.error(f"PDF error: {str(e)}")
 
     st.header("🔍 Web Search Settings")
-    st.checkbox("Enable real-time web search", value=True, key="web_search_enabled")
+    st.checkbox("Enable web search", value=True, key="web_search")
 
-# Main Chat Interface
+# Chat Interface
 st.title("💖 LoveBot: AI Relationship Assistant")
 
 for role, text in st.session_state.messages:
@@ -463,9 +479,8 @@ if prompt := st.chat_input("Ask about relationships..."):
     st.session_state.messages.append(("user", prompt))
     
     try:
-        with st.status("💞 Analyzing relationship patterns...", expanded=True) as status:
+        with st.status("💞 Analyzing...", expanded=True) as status:
             try:
-                # Execute workflow
                 result = st.session_state.workflow_manager.workflow.invoke({
                     "messages": [m[1] for m in st.session_state.messages],
                     "knowledge_context": "",
@@ -473,37 +488,35 @@ if prompt := st.chat_input("Ask about relationships..."):
                     "user_id": st.session_state.user_id
                 })
                 
-                response = result.get("response", "I'm still learning about relationships. Could you ask something more specific?")
-                
-                # Fallback checks
+                response = result.get("response", "Could you clarify?")
                 if not response.strip():
-                    response = "I'm having trouble understanding. Could you clarify?"
+                    response = "Still learning, please ask differently."
                     
                 st.session_state.messages.append(("assistant", response))
-                status.update(label="✅ Analysis complete", state="complete")
+                status.update(label="✅ Done", state="complete")
                 
             except Exception as e:
-                st.session_state.messages.append(("assistant", "I'm having trouble responding right now. Please try again later."))
-                status.update(label="❌ Analysis failed", state="error")
+                st.session_state.messages.append(("assistant", "Temporarily unavailable"))
+                status.update(label="❌ Failed", state="error")
                 logging.error(traceback.format_exc())
                 
     except Exception as fatal_error:
-        st.session_state.messages.append(("assistant", "Something went wrong. Let's try that again!"))
+        st.session_state.messages.append(("assistant", "Let's try again!"))
         logging.critical(traceback.format_exc())
     
     st.rerun()
 
 # Additional Features
 with st.expander("📖 Story Assistance"):
-    story_prompt = st.text_area("Start your relationship story:", key="story_input")
+    story_prompt = st.text_area("Start your story:")
     if st.button("Continue Story"):
         if story_prompt.strip():
-            st.session_state.messages.append(("user", f"Continue this story: {story_prompt}"))
+            st.session_state.messages.append(("user", f"Continue: {story_prompt}"))
             st.rerun()
 
 with st.expander("🔍 Research Assistant"):
-    research_query = st.text_input("Enter research topic:", key="research_query")
-    if st.button("Learn About This"):
+    research_query = st.text_input("Research topic:")
+    if st.button("Learn More"):
         if research_query.strip():
-            st.session_state.messages.append(("user", f"Research topic: {research_query}"))
+            st.session_state.messages.append(("user", f"Research: {research_query}"))
             st.rerun()
