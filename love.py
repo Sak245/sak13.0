@@ -1,5 +1,5 @@
 import sys
-sys.modules['torch.classes'] = None  # Must be first to prevent Torch monitoring issues
+sys.modules['torch.classes'] = None  # Critical Torch workaround - MUST BE FIRST
 
 import warnings
 import os
@@ -45,14 +45,14 @@ class Config:
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.device = "cpu"
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
-        self.rate_limit = 30  # Conservative rate limit
+        self.rate_limit = 30
         self.max_text_length = 1000
         self.retry_attempts = 5
         self.retry_delay = 2
 
 config = Config()
 
-# Singleton Qdrant client to prevent locking issues
+# Singleton Qdrant client management
 def get_qdrant_client():
     if 'qdrant_client' not in st.session_state:
         try:
@@ -62,7 +62,7 @@ def get_qdrant_client():
             )
             logging.info("Qdrant client initialized successfully")
         except Exception as e:
-            logging.error(f"Qdrant initialization failed: {str(e)}")
+            logging.error(f"Qdrant client initialization failed: {str(e)}")
             raise RuntimeError("Vector database connection failed")
     return st.session_state.qdrant_client
 
@@ -97,10 +97,9 @@ class KnowledgeManager:
                     collection_name="lovebot_knowledge",
                     vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                 )
-                logging.info("Created new Qdrant collection")
         except Exception as e:
-            logging.error(f"Collection init error: {str(e)}")
-            raise RuntimeError("Knowledge base initialization failed")
+            logging.error(f"Collection initialization error: {str(e)}")
+            raise RuntimeError("Failed to initialize knowledge base")
 
     def _init_sqlite(self):
         try:
@@ -115,10 +114,9 @@ class KnowledgeManager:
                     )
                 """)
                 conn.commit()
-            logging.info("Initialized SQLite database")
         except Exception as e:
-            logging.error(f"Database init error: {str(e)}")
-            raise RuntimeError("Database initialization failed")
+            logging.error(f"Database initialization error: {str(e)}")
+            raise RuntimeError("Failed to initialize database")
 
     def _ensure_persistence(self):
         """Ensure initial data exists in database"""
@@ -208,23 +206,20 @@ class AIService:
         self.groq_client = Groq(api_key=st.session_state.groq_key)
         self.searcher = SearchManager()
         self.rate_limits = defaultdict(list)
-        self.last_request = 0
 
     def check_rate_limit(self, user_id: str) -> bool:
         current_time = time.time()
-        self.rate_limits[user_id] = [t for t in self.rate_limits[user_id] if current_time - t < 3600]
+        self.rate_limits[user_id] = [
+            t for t in self.rate_limits[user_id]
+            if current_time - t < 3600
+        ]
         return len(self.rate_limits[user_id]) < config.rate_limit
 
     def generate_response(self, prompt: str, context: str, user_id: str) -> str:
         if not self.check_rate_limit(user_id):
             return "⏳ Please wait before asking more questions"
         
-        # Rate limiting throttle
-        time_since_last = time.time() - self.last_request
-        if time_since_last < 1.0:
-            time.sleep(1.0 - time_since_last)
-            
-        system_prompt = """You are a relationship expert. Provide advice using:
+        system_prompt = """You are a compassionate relationship expert. Provide advice using:
         1. Available knowledge base context
         2. Web research when needed
         3. Clear source attribution
@@ -239,8 +234,7 @@ class AIService:
                         {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {prompt}"}
                     ],
                     temperature=0.7,
-                    max_tokens=500,
-                    timeout=30
+                    max_tokens=500
                 )
                 
                 if not response.choices:
@@ -251,15 +245,14 @@ class AIService:
                     raise ValueError("Empty content in response")
                 
                 self.rate_limits[user_id].append(time.time())
-                self.last_request = time.time()
                 return output
                 
             except Exception as e:
-                logging.error(f"Attempt {attempt+1} failed: {str(e)}")
+                logging.error(f"Generation attempt {attempt+1} failed: {str(e)}")
                 if attempt < config.retry_attempts - 1:
                     time.sleep(config.retry_delay * (attempt + 1))
         
-        return "⚠️ Please try your question again later"
+        return "⚠️ Please try your question again"
 
 class BotState(TypedDict):
     messages: list[str]
@@ -270,13 +263,9 @@ class BotState(TypedDict):
 
 class WorkflowManager:
     def __init__(self):
-        try:
-            self.knowledge = KnowledgeManager()
-            self.ai = AIService()
-            self.workflow = self._build_workflow()
-        except Exception as e:
-            logging.error(f"Workflow initialization failed: {str(e)}")
-            raise
+        self.knowledge = KnowledgeManager()
+        self.ai = AIService()
+        self.workflow = self._build_workflow()
 
     def _build_workflow(self):
         workflow = StateGraph(BotState)
@@ -340,7 +329,7 @@ class WorkflowManager:
         )
         return {"response": response}
 
-def initialize_session():
+def initialize_session_state():
     required_keys = {
         'groq_key': None,
         'workflow_manager': None,
@@ -354,7 +343,7 @@ def initialize_session():
             st.session_state[key] = default
 
 def main():
-    initialize_session()
+    initialize_session_state()
 
     with st.sidebar:
         st.header("🔐 Configuration")
@@ -391,6 +380,7 @@ def main():
 
     st.title("💖 LoveBot: AI Relationship Assistant")
 
+    # Custom Knowledge Input
     with st.expander("📥 Add Custom Knowledge", expanded=False):
         custom_input = st.text_area(
             "Enter your relationship insight:",
@@ -421,6 +411,7 @@ def main():
                 else:
                     st.warning("Please enter valid text to save")
 
+    # Chat Interface
     chat_container = st.container()
     with chat_container:
         for role, text in st.session_state.messages:
@@ -450,7 +441,7 @@ def main():
                         
                 except Exception as e:
                     status.update(label="❌ Error processing request", state="error")
-                    st.error(f"Application error: {str(e)}")
+                    st.error(f"An error occurred: {str(e)}")
                     logging.error(traceback.format_exc())
             st.rerun()
 
