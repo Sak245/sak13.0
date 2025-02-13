@@ -39,14 +39,8 @@ logging.basicConfig(
 
 class Config:
     def __init__(self):
-        if 'HOSTNAME' in os.environ and 'streamlit' in os.environ['HOSTNAME']:
-            base_dir = Path(tempfile.mkdtemp())
-            self.qdrant_path = base_dir / "qdrant_storage"
-            self.storage_path = base_dir / "knowledge_storage"
-        else:
-            self.qdrant_path = Path("qdrant_storage")
-            self.storage_path = Path("knowledge_storage")
-            
+        self.qdrant_path = Path("qdrant_storage")
+        self.storage_path = Path("knowledge_storage")
         self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.device = "cpu"
