@@ -1,6 +1,6 @@
 streamlit>=1.42.0
 langgraph>=0.2.72
-qdrant-client>=1.13.2
+cassandra-driver>=3.29.1
 langchain-huggingface>=0.1.2
 groq>=0.18.0
 duckduckgo-search>=7.3.2
