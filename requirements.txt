@@ -1,17 +1,17 @@
-streamlit
-langgraph
-qdrant-client
-langchain-huggingface
-groq
-duckduckgo-search
-transformers
-sentence-transformers
-rich
-torch --index-url https://download.pytorch.org/whl/cpu
-protobuf
-numpy
-uvicorn
-fastapi
-python-multipart
-tqdm
 datastax-astra
+duckduckgo-search
+fastapi
+groq
+langchain-huggingface
+langgraph
+numpy
+protobuf
+qdrant-client
+rich
+sentence-transformers
+streamlit
+torch --index-url https://download.pytorch.org/whl/cpu
+transformers
+tqdm
+python-multipart
+uvicorn
