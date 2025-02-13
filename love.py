@@ -34,7 +34,6 @@ from typing import TypedDict, List
 from duckduckgo_search import DDGS
 from transformers import pipeline as transformers_pipeline
 import time
-from pathlib import Path
 import logging
 import numpy as np
 from collections import defaultdict
@@ -79,40 +78,52 @@ st.write("""
 # 🔑 API Key Handling
 # =====================
 with st.sidebar:
-    st.header("🔐 Configuration")
-    groq_key = st.text_input("Enter Groq API Key:", type="password")
+    st.header("🔐 Database & API Configuration")
+    
+    # Astra DB Credentials
+    st.subheader("Astra DB Credentials")
+    astra_db_id = st.text_input("Astra DB ID", type="password")
+    astra_db_region = st.text_input("Astra DB Region", type="password")
+    astra_db_app_token = st.text_input("Astra DB Application Token", type="password")
+    astra_db_client_id = st.text_input("Astra DB Client ID", type="password")
+    astra_db_client_secret = st.text_input("Astra DB Client Secret", type="password")
+    
+    # Groq API Key
+    st.subheader("Groq API Configuration")
+    groq_key = st.text_input("Groq API Key", type="password")
     st.markdown("[Get Groq Key](https://console.groq.com/keys)")
     
     st.header("📊 System Status")
     st.write(f"**Processing Device:** {config.device.upper()}")
 
-if not groq_key:
-    st.error("Please provide the Groq API key to proceed.")
+if not all([astra_db_id, astra_db_region, astra_db_app_token, astra_db_client_id, astra_db_client_secret]):
+    st.error("Please provide all Astra DB credentials to proceed.")
     st.stop()
 
-try:
-    test_client = Groq(api_key=groq_key)
-    test_client.chat.completions.create(
-        model="mixtral-8x7b-32768",
-        messages=[{"role": "user", "content": "test"}],
-        max_tokens=1
-    )
-except Exception as e:
-    st.error(f"❌ Invalid API key: {str(e)}")
+if not groq_key:
+    st.error("Please provide the Groq API key to proceed.")
     st.stop()
 
 # =====================
 # 📚 Astra DB Knowledge Management
 # =====================
 class KnowledgeManager:
-    def __init__(self):
+    def __init__(self, credentials: dict):
         self.embeddings = HuggingFaceEmbeddings(
             model_name=config.embedding_model,
             encode_kwargs={'normalize_embeddings': True}
         )
         
-        self.cluster = Cluster(["your_astra_db_endpoint"], 
-                             auth_provider=PlainTextAuthProvider('your_client_id', 'your_client_secret'))
+        cloud_config = {
+            'secure_connect_bundle': f'https://{astra_db_id}-{astra_db_region}.apps.astra.datastax.com/api/secure-connect-db.zip'
+        }
+        
+        auth_provider = PlainTextAuthProvider(
+            astra_db_client_id,
+            astra_db_client_secret
+        )
+        
+        self.cluster = Cluster(cloud=cloud_config, auth_provider=auth_provider)
         self.session = self.cluster.connect()
         self._init_db()
 
@@ -271,7 +282,7 @@ class AIService:
                     model="mixtral-8x7b-32768",
                     messages=[{
                         "role": "system",
-                        "content": f"""You are a compassionate relationship expert. Use this context:
+                        "content": f"""You are a compassionate relationship expert. Context:
                         {context}
                         Provide thoughtful, empathetic advice."""
                     }, {
@@ -293,7 +304,7 @@ class AIService:
                 logging.error(f"Attempt {attempt+1} failed: {str(e)}")
                 time.sleep(self.retry_delay * (attempt + 1))
                 
-        return "I believe understanding and communication are key. Could you elaborate?"
+        return "Open communication and mutual understanding are key. Could you elaborate?"
 
 # =====================
 # 🤖 Workflow Management
@@ -305,9 +316,9 @@ class BotState(TypedDict):
     user_id: str
 
 class WorkflowManager:
-    def __init__(self, api_key: str):
-        self.knowledge = KnowledgeManager()
-        self.ai = AIService(api_key=api_key)
+    def __init__(self, db_creds: dict, api_key: str):
+        self.knowledge = KnowledgeManager(db_creds)
+        self.ai = AIService(api_key)
         self.workflow = self._build_workflow()
 
     def _build_workflow(self):
@@ -358,7 +369,13 @@ class WorkflowManager:
 # =====================
 if "workflow_manager" not in st.session_state or st.session_state.groq_key != groq_key:
     st.session_state.groq_key = groq_key
-    st.session_state.workflow_manager = WorkflowManager(groq_key)
+    st.session_state.workflow_manager = WorkflowManager({
+        "id": astra_db_id,
+        "region": astra_db_region,
+        "app_token": astra_db_app_token,
+        "client_id": astra_db_client_id,
+        "client_secret": astra_db_client_secret
+    }, groq_key)
 
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
