@@ -1,6 +1,23 @@
+# =====================
+# 🛠️ Initial Configuration
+# =====================
 import warnings
 import os
 import tempfile
+import sys
+import torch
+import transformers
+
+# Workaround for Streamlit watcher bug
+sys.modules['torch.classes'] = None
+torch._dynamo.config.suppress_errors = True
+
+# Configure transformers logging
+transformers.logging.set_verbosity_error()
+
+# =====================
+# 📦 Package Imports
+# =====================
 import streamlit as st
 from langgraph.graph import StateGraph, END
 from qdrant_client import QdrantClient
@@ -17,30 +34,12 @@ from functools import lru_cache
 import time
 from pathlib import Path
 import logging
-import torch
 import numpy as np
 from collections import defaultdict
 import traceback
-import sys
-import re
-
-# Workaround for Streamlit watcher bug
-sys.modules['torch.classes'] = None
-
-# Configure environment
-warnings.filterwarnings("ignore")
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-torch.set_default_dtype(torch.float32)
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
 
 # =====================
-# 🛠️ Configuration Setup
+# ⚙️ Configuration Setup
 # =====================
 class Config:
     def __init__(self):
@@ -55,7 +54,7 @@ class Config:
         self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
-        self.device = "cpu"
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 50
@@ -101,7 +100,7 @@ except Exception as e:
     st.stop()
 
 # =====================
-# 📚 Enhanced Knowledge Management
+# 📚 Knowledge Management
 # =====================
 class KnowledgeManager:
     def __init__(self):
@@ -253,14 +252,15 @@ class SearchManager:
             return []
 
 # =====================
-# 🧠 Enhanced AI Service
+# 🧠 AI Service
 # =====================
 class AIService:
     def __init__(self):
         self.groq_client = Groq(api_key=groq_key)
         self.safety_checker = pipeline(
             "text-classification", 
-            model=config.safety_model
+            model=config.safety_model,
+            device=0 if torch.cuda.is_available() else -1
         )
         self.searcher = SearchManager()
         self.rate_limits = defaultdict(list)
