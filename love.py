@@ -1,6 +1,6 @@
 # Add at the very top before other imports
 import sys
-sys.modules['torch.classes'] = None  # Fix Streamlit watcher bug
+sys.modules['torch.classes'] = None
 from functools import lru_cache
 
 # =====================
@@ -11,7 +11,7 @@ import os
 import tempfile
 import torch
 import transformers
-import fitz  # PyMuPDF for PDF processing
+import fitz
 
 # Workaround for Streamlit watcher bug
 sys.modules['torch.classes'] = None
@@ -115,7 +115,7 @@ except Exception as e:
     st.stop()
 
 # =====================
-# 📚 Knowledge Management
+# 📚 Enhanced Knowledge Management
 # =====================
 class KnowledgeManager:
     def __init__(self):
@@ -283,7 +283,7 @@ class KnowledgeManager:
             return []
 
 # =====================
-# 🔍 Search Management
+# 🔍 Enhanced Search Management
 # =====================
 class SearchManager:
     @lru_cache(maxsize=100)
@@ -297,7 +297,7 @@ class SearchManager:
             return []
 
 # =====================
-# 🧠 AI Service
+# 🧠 Robust AI Service
 # =====================
 class AIService:
     def __init__(self, api_key: str):
@@ -327,9 +327,9 @@ class AIService:
                     model="mixtral-8x7b-32768",
                     messages=[{
                         "role": "system",
-                        "content": f"""You're a compassionate relationship expert. Use this context if relevant:
+                        "content": f"""You are a compassionate relationship expert. Use this context if relevant:
                         {context}
-                        If no context matches, use your general knowledge. Always provide helpful advice."""
+                        Always provide thoughtful, empathetic advice. If no context matches, draw from your training."""
                     }, {
                         "role": "user",
                         "content": prompt
@@ -375,7 +375,7 @@ class AIService:
                 max_tokens=300
             ).choices[0].message.content
         except Exception as e:
-            return "I'm having trouble finding information. Here's general advice: Communication and mutual understanding are key to healthy relationships."
+            return "I believe open communication and mutual understanding are key to healthy relationships. Could you share more details?"
 
 # =====================
 # 🤖 Workflow Management
@@ -499,19 +499,19 @@ if prompt := st.chat_input("Ask about relationships..."):
                 status.update(label="✅ Done", state="complete")
                 
             except Exception as e:
-                st.session_state.messages.append(("assistant", "I'm having trouble responding. Here's general advice: Open communication is vital in relationships."))
+                st.session_state.messages.append(("assistant", "Let's focus on understanding each other. Could you rephrase your question?"))
                 status.update(label="❌ Failed", state="error")
                 logging.error(traceback.format_exc())
                 
     except Exception as fatal_error:
-        st.session_state.messages.append(("assistant", "Let's try again! Please rephrase your question."))
+        st.session_state.messages.append(("assistant", "Let's try again! Please share your thoughts."))
         logging.critical(traceback.format_exc())
     
     st.rerun()
 
 # Additional Features
 with st.expander("📖 Story Assistance"):
-    story_prompt = st.text_area("Start your story:")
+    story_prompt = st.text_area("Start your relationship story:")
     if st.button("Continue Story"):
         if story_prompt.strip():
             st.session_state.messages.append(("user", f"Continue: {story_prompt}"))
