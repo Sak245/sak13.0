@@ -93,7 +93,7 @@ class KnowledgeManager:
                     vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                 )
         except Exception as e:
-            logging.error(f"Collection init error: {str(e)}")
+            logging.error(f"Collection initialization error: {str(e)}")
             raise RuntimeError("Failed to initialize knowledge base")
 
     def _init_sqlite(self):
@@ -110,7 +110,7 @@ class KnowledgeManager:
                 """)
                 conn.commit()
         except Exception as e:
-            logging.error(f"Database init error: {str(e)}")
+            logging.error(f"Database initialization error: {str(e)}")
             raise RuntimeError("Failed to initialize database")
 
     def _ensure_persistence(self):
