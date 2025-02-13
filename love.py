@@ -1,3 +1,7 @@
+# Add at the very top before other imports
+import sys
+sys.modules['torch.classes'] = None  # Fix Streamlit watcher bug
+
 # =====================
 # 🛠️ Initial Configuration
 # =====================
@@ -27,7 +31,7 @@ from groq import Groq
 import uuid
 from typing import TypedDict
 from duckduckgo_search import DDGS
-from transformers import pipeline
+from transformers import pipeline as transformers_pipeline
 import sqlite3
 import pickle
 from functools import lru_cache
@@ -254,10 +258,11 @@ class SearchManager:
 # =====================
 # 🧠 AI Service
 # =====================
+
 class AIService:
     def __init__(self):
         self.groq_client = Groq(api_key=groq_key)
-        self.safety_checker = pipeline(
+        self.safety_checker = transformers_pipeline(
             "text-classification", 
             model=config.safety_model,
             device=0 if torch.cuda.is_available() else -1
