@@ -1,6 +1,8 @@
+# Critical Torch workaround must be FIRST
 import sys
-sys.modules['torch.classes'] = None  # Critical Torch workaround
+sys.modules['torch.classes'] = None  # Fixes RuntimeError
 
+# Then other imports
 import warnings
 import os
 import tempfile
@@ -77,35 +79,7 @@ class KnowledgeManager:
         )
         self._init_collection()
         self._init_sqlite()
-        self._ensure_persistence()
-
-    def _init_collection(self):
-        try:
-            if not self.client.collection_exists("lovebot_knowledge"):
-                self.client.create_collection(
-                    collection_name="lovebot_knowledge",
-                    vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-                )
-        except Exception as e:
-            logging.error(f"Collection initialization error: {str(e)}")
-            raise RuntimeError("Failed to initialize knowledge base")
-
-    def _init_sqlite(self):
-        try:
-            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS knowledge_entries (
-                        id TEXT PRIMARY KEY,
-                        text TEXT UNIQUE,
-                        source_type TEXT,
-                        vector BLOB,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                conn.commit()
-        except Exception as e:
-            logging.error(f"Database initialization error: {str(e)}")
-            raise RuntimeError("Failed to initialize database")
+        self._ensure_persistence()  # Now properly called
 
     def _ensure_persistence(self):
         """Ensure initial data exists in database"""
@@ -129,8 +103,9 @@ class KnowledgeManager:
             try:
                 self.add_knowledge(text, source)
             except Exception as e:
-                logging.error(f"Failed to seed entry: {text}. Error: {str(e)}")
-
+                logging.error(f"Failed to seed entry: {text}. 
+Error: {str(e)}")
+                
     def add_knowledge(self, text: str, source_type: str) -> bool:
         try:
             text = text.strip()
