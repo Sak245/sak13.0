@@ -22,6 +22,7 @@ import numpy as np
 from collections import defaultdict
 import traceback
 import sys
+import re
 
 # Workaround for Streamlit watcher bug
 sys.modules['torch.classes'] = None
@@ -58,6 +59,7 @@ class Config:
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 50
+        self.max_text_length = 1000  # Character limit for knowledge entries
 
 config = Config()
 
@@ -99,7 +101,7 @@ except Exception as e:
     st.stop()
 
 # =====================
-# 📚 Knowledge Management
+# 📚 Enhanced Knowledge Management
 # =====================
 class KnowledgeManager:
     def __init__(self):
@@ -162,32 +164,71 @@ class KnowledgeManager:
         for text, source in initial_data:
             self.add_knowledge(text, source)
 
+    def _chunk_text(self, text: str):
+        """Split large texts into manageable chunks"""
+        sentences = re.split(r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?)\s', text)
+        chunks = []
+        current_chunk = []
+        current_length = 0
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            if current_length + len(sentence) <= config.max_text_length:
+                current_chunk.append(sentence)
+                current_length += len(sentence)
+            else:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = [sentence]
+                current_length = len(sentence)
+        
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+            
+        return chunks
+
     def add_knowledge(self, text: str, source_type: str):
         try:
-            embedding = self.embeddings.embed_query(text)
-            point_id = str(uuid.uuid4())
-            
-            if isinstance(embedding, list):
-                embedding = np.array(embedding)
-            
-            # Add to vector store
-            self.client.upsert(
-                collection_name="lovebot_knowledge",
-                points=[PointStruct(
-                    id=point_id,
-                    vector=embedding.tolist(),
-                    payload={"text": text}
-                )]
-            )
-            
-            # Add to SQLite
-            with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
-                conn.execute(
-                    "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                    (point_id, text, source_type, pickle.dumps(embedding))
-                )
+            # Clean and validate input
+            text = text.strip()
+            if not text:
+                raise ValueError("Empty text input")
+                
+            if len(text) > config.max_text_length * 10:  # Allow 10x chunks
+                for chunk in self._chunk_text(text):
+                    self._add_single_knowledge(chunk, source_type)
+            else:
+                self._add_single_knowledge(text, source_type)
+                
         except Exception as e:
             logging.error(f"Add knowledge error: {str(e)}")
+            raise
+
+    def _add_single_knowledge(self, text: str, source_type: str):
+        embedding = self.embeddings.embed_query(text)
+        point_id = str(uuid.uuid4())
+        
+        if isinstance(embedding, list):
+            embedding = np.array(embedding)
+        
+        # Add to vector store
+        self.client.upsert(
+            collection_name="lovebot_knowledge",
+            points=[PointStruct(
+                id=point_id,
+                vector=embedding.tolist(),
+                payload={"text": text}
+            )]
+        )
+        
+        # Add to SQLite
+        with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (point_id, text, source_type, pickle.dumps(embedding))
+            )
 
     def search_knowledge(self, query: str, limit=3):
         try:
@@ -221,7 +262,7 @@ class SearchManager:
             return []
 
 # =====================
-# 🧠 AI Service
+# 🧠 Enhanced AI Service
 # =====================
 class AIService:
     def __init__(self):
@@ -232,8 +273,8 @@ class AIService:
         )
         self.searcher = SearchManager()
         self.rate_limits = defaultdict(list)
-        self.max_retries = 3
-        self.retry_delay = 1
+        self.max_retries = 5
+        self.retry_delay = 2
 
     def check_rate_limit(self, user_id: str):
         current_time = time.time()
@@ -259,9 +300,12 @@ class AIService:
                     max_tokens=500
                 )
                 
+                if not response.choices:
+                    raise ValueError("Empty response from API")
+                    
                 output = response.choices[0].message.content
                 if not output.strip():
-                    raise ValueError("Empty response from API")
+                    raise ValueError("Empty content in response")
                     
                 return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
             
@@ -353,9 +397,11 @@ if "messages" not in st.session_state:
 
 st.title("💖 LoveBot: AI Relationship Assistant")
 
-# Permanent Knowledge Addition
+# Custom Knowledge Input
 with st.expander("📥 Add Custom Knowledge"):
-    custom_input = st.text_area("Enter your relationship insight:", key="custom_input")
+    custom_input = st.text_area("Enter your relationship insight:", 
+                              help="Maximum 10,000 characters", 
+                              key="custom_input")
     if st.button("💾 Save Permanently"):
         if custom_input.strip():
             try:
