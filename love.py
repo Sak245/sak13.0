@@ -15,7 +15,7 @@ import fitz  # PyMuPDF for PDF processing
 
 # Workaround for Streamlit watcher bug
 sys.modules['torch.classes'] = None
-torch._dynamyyo.config.suppress_errors = True
+torch._dynamo.config.suppress_errors = True
 
 # Configure transformers logging
 transformers.logging.set_verbosity_error()
