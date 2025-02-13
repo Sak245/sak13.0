@@ -38,9 +38,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 
-# =====================
-# 🛠️ Configuration Setup
-# =====================
 class Config:
     def __init__(self):
         if 'HOSTNAME' in os.environ and 'streamlit' in os.environ['HOSTNAME']:
@@ -62,9 +59,7 @@ class Config:
 
 config = Config()
 
-# =====================
-# 🔐 Streamlit Configuration
-# =====================
+# Streamlit Configuration
 st.set_page_config(page_title="LoveBot", page_icon="💖", layout="wide")
 st.write("""
 <style>
@@ -77,9 +72,6 @@ st.write("""
 </style>
 """, unsafe_allow_html=True)
 
-# =====================
-# 📚 Enhanced Knowledge Management
-# =====================
 class KnowledgeManager:
     def __init__(self):
         self.embeddings = HuggingFaceEmbeddings(
@@ -123,7 +115,6 @@ class KnowledgeManager:
             raise RuntimeError("Failed to initialize database")
 
     def _ensure_persistence(self):
-        """Ensure initial data exists in database"""
         try:
             with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
                 cur = conn.execute("SELECT COUNT(*) FROM knowledge_entries")
@@ -134,11 +125,9 @@ class KnowledgeManager:
             self._seed_initial_data()
 
     def _seed_initial_data(self):
-        """Add default relationship knowledge"""
         initial_data = [
-            ("Healthy relationships are built on trust, respect, and open communication", "seed"),
-            ("Setting and respecting boundaries is essential for relationship health", "seed"),
-            ("Effective conflict resolution involves active listening and empathy", "seed")
+            ("Healthy relationships require trust and communication", "seed"),
+            ("Setting boundaries is essential for relationship health", "seed")
         ]
         for text, source in initial_data:
             try:
@@ -195,9 +184,6 @@ class KnowledgeManager:
             logging.error(f"Knowledge search error: {str(e)}")
             return []
 
-# =====================
-# 🔍 Enhanced Search Management
-# =====================
 class SearchManager:
     @lru_cache(maxsize=100)
     def cached_search(self, query: str, max_results: int = 2) -> list[dict]:
@@ -212,9 +198,6 @@ class SearchManager:
             logging.error(f"Web search error: {str(e)}")
             return []
 
-# =====================
-# 🧠 Enhanced AI Service
-# =====================
 class AIService:
     def __init__(self):
         self.groq_client = Groq(api_key=st.session_state.groq_key)
@@ -233,7 +216,7 @@ class AIService:
         if not self.check_rate_limit(user_id):
             return "⏳ Please wait before asking more questions"
         
-        system_prompt = """You are a compassionate relationship expert AI assistant. Provide advice using:
+        system_prompt = """You are a compassionate relationship expert. Provide advice using:
         1. Knowledge base context when available
         2. Web research when needed
         3. Clear source attribution
@@ -266,9 +249,6 @@ class AIService:
         
         return "⚠️ Please try your question again"
 
-# =====================
-# 🤖 Enhanced Workflow Management
-# =====================
 class BotState(TypedDict):
     messages: list[str]
     knowledge_context: str
@@ -300,7 +280,6 @@ class WorkflowManager:
         return workflow.compile()
 
     def decide_web_fallback(self, state: BotState) -> str:
-        """Determine if web fallback is needed"""
         return "web_fallback" if not state.get("knowledge_found") else "direct_response"
 
     def retrieve_knowledge(self, state: BotState) -> dict:
@@ -336,7 +315,7 @@ class WorkflowManager:
         if state.get("web_context"):
             context_sources.append(f"WEB CONTEXT:\n{state['web_context']}")
             
-        full_context = "\n\n".join(context_sources) or "No specific context available. Providing general advice."
+        full_context = "\n\n".join(context_sources) or "No specific context available"
         
         response = self.ai.generate_response(
             prompt=state["messages"][-1],
@@ -345,9 +324,6 @@ class WorkflowManager:
         )
         return {"response": response}
 
-# =====================
-# 💻 Streamlit Interface
-# =====================
 if "groq_key" not in st.session_state:
     st.session_state.groq_key = None
 
@@ -450,56 +426,5 @@ with chat_container:
                 logging.error(traceback.format_exc())
         st.rerun()
 
-# Additional Features
-with st.expander("🎯 Relationship Goals"):
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📝 Story Assistant")
-        story_prompt = st.text_area(
-            "Share your relationship story or scenario:",
-            key="story_input"
-        )
-        if st.button("✨ Get Insight", key="story_insight_button"):
-            if story_prompt:
-                with st.spinner("Analyzing your story..."):
-                    response = st.session_state.workflow_manager.ai.generate_response(
-                        prompt=f"Analyze this relationship situation and provide constructive advice: {story_prompt}",
-                        context="",
-                        user_id=st.session_state.user_id
-                    )
-                    st.write(response)
-            else:
-                st.warning("Please enter a story or scenario first")
-                
-    with col2:
-        st.subheader("🔍 Research Topics")
-        research_query = st.text_input(
-            "Enter a relationship topic to learn more about:",
-            key="research_input"
-        )
-        if st.button("📚 Research", key="research_button"):
-            if research_query:
-                with st.spinner("Researching..."):
-                    try:
-                        results = st.session_state.workflow_manager.ai.searcher.cached_search(research_query)
-                        if results:
-                            for result in results:
-                                st.session_state.workflow_manager.knowledge.add_knowledge(
-                                    f"{result['title']}: {result['body']}",
-                                    "web_research"
-                                )
-                            st.success(f"Added {len(results)} new insights about {research_query}")
-                        else:
-                            st.info("No new information found for this topic")
-                    except Exception as e:
-                        st.error("Research failed. Please try again later.")
-                        logging.error(traceback.format_exc())
-            else:
-                st.warning("Please enter a topic to research")
-
 st.markdown("---")
-st.markdown(
-    "💝 **LoveBot** - Your AI Relationship Assistant | "
-    "Built with care to help nurture healthy relationships"
-)
+st.markdown("💝 **LoveBot** - Your AI Relationship Assistant")
