@@ -8,7 +8,6 @@ sys.modules['torch.classes'] = None  # Fix Streamlit watcher bug
 import warnings
 import os
 import tempfile
-import sys
 import torch
 import transformers
 
@@ -33,7 +32,6 @@ from typing import TypedDict
 from duckduckgo_search import DDGS
 from transformers import pipeline as transformers_pipeline
 import sqlite3
-import pickle
 from functools import lru_cache
 import time
 from pathlib import Path
@@ -41,6 +39,7 @@ import logging
 import numpy as np
 from collections import defaultdict
 import traceback
+from expiringdict import ExpiringDict
 
 # =====================
 # ⚙️ Configuration Setup
@@ -63,6 +62,14 @@ class Config:
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 50
         self.max_text_length = 1000
+        
+        self._validate()
+        
+    def _validate(self):
+        if self.max_text_length < 100:
+            raise ValueError("max_text_length must be at least 100")
+        if not self.embedding_model.startswith("sentence-transformers/"):
+            warnings.warn("Unexpected embedding model format")
 
 config = Config()
 
@@ -140,7 +147,6 @@ class KnowledgeManager:
                         id TEXT PRIMARY KEY,
                         text TEXT UNIQUE,
                         source_type TEXT,
-                        vector BLOB,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -167,24 +173,20 @@ class KnowledgeManager:
             self.add_knowledge(text, source)
 
     def _chunk_text(self, text: str):
-        paragraphs = [p.strip() for p in text.split('\n') if p.strip()]
-        chunks = []
-        current_chunk = []
-        current_length = 0
-        
-        for para in paragraphs:
-            if current_length + len(para) <= config.max_text_length:
-                current_chunk.append(para)
-                current_length += len(para)
-            else:
-                chunks.append("\n".join(current_chunk))
-                current_chunk = [para]
-                current_length = len(para)
-        
-        if current_chunk:
-            chunks.append("\n".join(current_chunk))
+        def recursive_split(text, delimiters):
+            if len(text) <= config.max_text_length:
+                return [text]
             
-        return chunks
+            for delimiter in delimiters:
+                parts = text.split(delimiter)
+                if len(parts) > 1:
+                    chunks = []
+                    for part in parts:
+                        chunks += recursive_split(part, delimiters[1:])
+                    return chunks
+            return [text[:config.max_text_length]] + recursive_split(text[config.max_text_length:], delimiters)
+        
+        return recursive_split(text, ["\n\n", "\n", ". ", "! ", "? ", "; ", ", "])
 
     def add_knowledge(self, text: str, source_type: str):
         try:
@@ -220,8 +222,8 @@ class KnowledgeManager:
         
         with sqlite3.connect(config.storage_path / "knowledge.db") as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-                (point_id, text, source_type, pickle.dumps(embedding))
+                "INSERT OR IGNORE INTO knowledge_entries VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (point_id, text, source_type)
             )
 
     def search_knowledge(self, query: str, limit=3):
@@ -258,7 +260,6 @@ class SearchManager:
 # =====================
 # 🧠 AI Service
 # =====================
-
 class AIService:
     def __init__(self):
         self.groq_client = Groq(api_key=groq_key)
@@ -268,14 +269,12 @@ class AIService:
             device=0 if torch.cuda.is_available() else -1
         )
         self.searcher = SearchManager()
-        self.rate_limits = defaultdict(list)
+        self.rate_limits = ExpiringDict(max_len=1000, max_age_seconds=3600)
         self.max_retries = 5
         self.retry_delay = 2
 
     def check_rate_limit(self, user_id: str):
-        current_time = time.time()
-        self.rate_limits[user_id] = [t for t in self.rate_limits[user_id] if current_time - t < 3600]
-        return len(self.rate_limits[user_id]) < config.rate_limit
+        return user_id not in self.rate_limits or len(self.rate_limits[user_id]) < config.rate_limit
 
     def generate_response(self, prompt: str, context: str, user_id: str):
         if not self.check_rate_limit(user_id):
@@ -304,10 +303,6 @@ class AIService:
                 if not output.strip() or len(output) < 50:
                     raise ValueError("Insufficient response content")
                     
-                valid_prefixes = ("I", "You", "We", "Love", "Relationships", "It's")
-                if not any(output.strip().startswith(prefix) for prefix in valid_prefixes):
-                    raise ValueError("Unstructured response format")
-                    
                 return output if self._is_safe(output) else "🚫 Response blocked by safety filters"
             
             except Exception as e:
@@ -318,8 +313,12 @@ class AIService:
 
     def _is_safe(self, text: str):
         try:
-            result = self.safety_checker(text[:512])[0]
-            return result["label"] != "LABEL_1" and result["score"] < 0.85
+            chunks = [text[i:i+512] for i in range(0, len(text), 512)]
+            for chunk in chunks:
+                result = self.safety_checker(chunk[:512])[0]
+                if result["label"] == "LABEL_1" and result["score"] >= 0.85:
+                    return False
+            return True
         except Exception as e:
             logging.error(f"Safety error: {str(e)}")
             return False
