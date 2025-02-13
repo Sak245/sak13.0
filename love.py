@@ -508,22 +508,40 @@ with chat_container:
                 logging.error(traceback.format_exc())
         st.rerun()
 
-# Additional Features
-with st.expander("🎯 Relationship Goals"):
-    col1, col2 = st.columns(2)
+with st.expander("📥 Add Custom Knowledge"):
+    # Use separate keys for widget and storage
+    widget_key = "custom_input_widget"
+    storage_key = "custom_knowledge"
     
+    # Initialize session state
+    if storage_key not in st.session_state:
+        st.session_state[storage_key] = ""
+
+    def save_knowledge():
+        if st.session_state[widget_key].strip():
+            try:
+                success = st.session_state.workflow_manager.knowledge.add_knowledge(
+                    text=st.session_state[widget_key],
+                    source_type="user"
+                )
+                if success:
+                    st.session_state[storage_key] = st.session_state[widget_key]
+                    st.session_state[widget_key] = ""  # Clear widget state
+                    st.success("✅ Knowledge saved successfully!")
+                else:
+                    st.error("Failed to save knowledge")
+            except Exception as e:
+                st.error(f"Error saving knowledge: {str(e)}")
+
+    custom_input = st.text_area(
+        "Enter your relationship insight:",
+        help="Share your relationship wisdom (max 10,000 characters",
+        max_chars=10000,
+        key=widget_key
+    )
+    
+    col1, col2 = st.columns([1, 4])
     with col1:
-        st.subheader("📝 Story Assistant")
-        story_prompt = st.text_area(
-            "Share your relationship story or scenario:",
-            key="story_input"
-        )
-        if st.button("✨ Get Insight", key="story_button"):
-            if story_prompt:
-                with st.spinner("Analyzing your story..."):
-                    response = st.session_state.workflow_manager.ai.generate_response(
-                        prompt=f"Analyze this relationship situation and provide constructive advice: {story_prompt}",
-                        context="",
-                        user_id=st.session_state.user_id
-                    )
-                    st.write(response)
+        st.button("💾 Save", 
+                 on_click=save_knowledge,
+                 use_container_width=True)
