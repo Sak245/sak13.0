@@ -1,5 +1,5 @@
 import sys
-sys.modules['torch.classes'] = None  # Critical Torch workaround (MUST BE FIRST)
+sys.modules['torch.classes'] = None  # Critical Torch workaround - MUST BE FIRST
 
 import warnings
 import os
@@ -39,18 +39,38 @@ logging.basicConfig(
 
 class Config:
     def __init__(self):
-        self.qdrant_path = Path("qdrant_storage")
-        self.storage_path = Path("knowledge_storage")
+        if 'HOSTNAME' in os.environ and 'streamlit' in os.environ['HOSTNAME']:
+            base_dir = Path(tempfile.mkdtemp())
+            self.qdrant_path = base_dir / "qdrant_storage"
+            self.storage_path = base_dir / "knowledge_storage"
+        else:
+            self.qdrant_path = Path("qdrant_storage")
+            self.storage_path = Path("knowledge_storage")
+            
         self.qdrant_path.mkdir(parents=True, exist_ok=True)
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self.device = "cpu"
         self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
-        self.rate_limit = 50
+        self.rate_limit = 30  # Reduced for safety
         self.max_text_length = 1000
-        self.retry_attempts = 3
+        self.retry_attempts = 5  # Increased retries
         self.retry_delay = 2
 
 config = Config()
+
+# Singleton Qdrant client management
+def get_qdrant_client():
+    if 'qdrant_client' not in st.session_state:
+        try:
+            st.session_state.qdrant_client = QdrantClient(
+                path=str(config.qdrant_path),
+                prefer_grpc=False
+            )
+            logging.info("Qdrant client initialized successfully")
+        except Exception as e:
+            logging.error(f"Qdrant client initialization failed: {str(e)}")
+            raise RuntimeError("Failed to initialize vector database")
+    return st.session_state.qdrant_client
 
 # Streamlit Configuration
 st.set_page_config(page_title="LoveBot", page_icon="💖", layout="wide")
@@ -71,7 +91,7 @@ class KnowledgeManager:
             model_name=config.embedding_model,
             encode_kwargs={'normalize_embeddings': True}
         )
-        self.client = QdrantClient(path=str(config.qdrant_path))
+        self.client = get_qdrant_client()
         self._init_collection()
         self._init_sqlite()
         self._ensure_persistence()
@@ -83,8 +103,9 @@ class KnowledgeManager:
                     collection_name="lovebot_knowledge",
                     vectors_config=VectorParams(size=384, distance=Distance.COSINE),
                 )
+                logging.info("Created new Qdrant collection")
         except Exception as e:
-            logging.error(f"Collection initialization error: {str(e)}")
+            logging.error(f"Collection init error: {str(e)}")
             raise RuntimeError("Failed to initialize knowledge base")
 
     def _init_sqlite(self):
@@ -100,8 +121,9 @@ class KnowledgeManager:
                     )
                 """)
                 conn.commit()
+            logging.info("Initialized SQLite database")
         except Exception as e:
-            logging.error(f"Database initialization error: {str(e)}")
+            logging.error(f"Database init error: {str(e)}")
             raise RuntimeError("Failed to initialize database")
 
     def _ensure_persistence(self):
@@ -118,9 +140,9 @@ class KnowledgeManager:
     def _seed_initial_data(self):
         """Add default relationship knowledge"""
         initial_data = [
-            ("Healthy relationships require trust and communication", "seed"),
-            ("Setting boundaries is essential for relationship health", "seed"),
-            ("Effective conflict resolution involves active listening", "seed")
+            ("Healthy communication is key to resolving conflicts", "seed"),
+            ("Respecting boundaries builds trust in relationships", "seed"),
+            ("Active listening is essential for understanding partners", "seed")
         ]
         for text, source in initial_data:
             try:
@@ -192,20 +214,23 @@ class AIService:
         self.groq_client = Groq(api_key=st.session_state.groq_key)
         self.searcher = SearchManager()
         self.rate_limits = defaultdict(list)
+        self.last_request = 0
 
     def check_rate_limit(self, user_id: str) -> bool:
         current_time = time.time()
-        self.rate_limits[user_id] = [
-            t for t in self.rate_limits[user_id]
-            if current_time - t < 3600
-        ]
+        self.rate_limits[user_id] = [t for t in self.rate_limits[user_id] if current_time - t < 3600]
         return len(self.rate_limits[user_id]) < config.rate_limit
 
     def generate_response(self, prompt: str, context: str, user_id: str) -> str:
         if not self.check_rate_limit(user_id):
             return "⏳ Please wait before asking more questions"
         
-        system_prompt = """You are a compassionate relationship expert. Provide advice using:
+        # Rate limit throttling
+        time_since_last = time.time() - self.last_request
+        if time_since_last < 1.0:
+            time.sleep(1.0 - time_since_last)
+            
+        system_prompt = """You are a relationship expert. Provide advice using:
         1. Knowledge base context when available
         2. Web research when needed
         3. Clear source attribution
@@ -220,7 +245,8 @@ class AIService:
                         {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {prompt}"}
                     ],
                     temperature=0.7,
-                    max_tokens=500
+                    max_tokens=500,
+                    timeout=30  # Added timeout
                 )
                 
                 if not response.choices:
@@ -231,14 +257,15 @@ class AIService:
                     raise ValueError("Empty content in response")
                 
                 self.rate_limits[user_id].append(time.time())
+                self.last_request = time.time()
                 return output
                 
             except Exception as e:
-                logging.error(f"Generation attempt {attempt+1} failed: {str(e)}")
+                logging.error(f"Attempt {attempt+1} failed: {str(e)}")
                 if attempt < config.retry_attempts - 1:
                     time.sleep(config.retry_delay * (attempt + 1))
         
-        return "⚠️ Please try your question again"
+        return "⚠️ Please try your question again later"
 
 class BotState(TypedDict):
     messages: list[str]
@@ -315,107 +342,126 @@ class WorkflowManager:
         )
         return {"response": response}
 
-if "groq_key" not in st.session_state:
-    st.session_state.groq_key = None
-
-with st.sidebar:
-    st.header("🔐 Configuration")
-    groq_key = st.text_input("Enter Groq API Key:", type="password", key="groq_key_input")
-    st.markdown("[Get Groq Key](https://console.groq.com/keys)")
+# Streamlit App Initialization
+def initialize_session_state():
+    required_keys = {
+        'groq_key': None,
+        'workflow_manager': None,
+        'user_id': str(uuid.uuid4()),
+        'messages': [],
+        'custom_input': ""
+    }
     
-    if groq_key:
+    for key, default in required_keys.items():
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+# Main App
+def main():
+    initialize_session_state()
+
+    with st.sidebar:
+        st.header("🔐 Configuration")
+        groq_key = st.text_input("Enter Groq API Key:", 
+                                type="password", 
+                                key="groq_key_input",
+                                help="Get your API key from https://console.groq.com/keys")
+        
+        if groq_key:
+            try:
+                test_client = Groq(api_key=groq_key)
+                test_client.chat.completions.create(
+                    model="mixtral-8x7b-32768",
+                    messages=[{"role": "user", "content": "test"}],
+                    max_tokens=1
+                )
+                st.session_state.groq_key = groq_key
+                st.success("API Key validated successfully!")
+            except Exception as e:
+                st.error(f"❌ Invalid API key: {str(e)}")
+                st.session_state.groq_key = None
+                st.stop()
+
+    if not st.session_state.groq_key:
+        st.error("Please provide a valid Groq API key to proceed.")
+        st.stop()
+
+    if not st.session_state.workflow_manager:
         try:
-            test_client = Groq(api_key=groq_key)
-            test_client.chat.completions.create(
-                model="mixtral-8x7b-32768",
-                messages=[{"role": "user", "content": "test"}],
-                max_tokens=1
-            )
-            st.session_state.groq_key = groq_key
-            st.success("API Key validated successfully!")
-        except Exception as e:
-            st.error(f"❌ Invalid API key: {str(e)}")
-            st.session_state.groq_key = None
+            st.session_state.workflow_manager = WorkflowManager()
+        except RuntimeError as e:
+            st.error(f"Failed to initialize application: {str(e)}")
             st.stop()
 
-if not st.session_state.groq_key:
-    st.error("Please provide a valid Groq API key to proceed.")
-    st.stop()
+    st.title("💖 LoveBot: AI Relationship Assistant")
 
-if "workflow_manager" not in st.session_state:
-    st.session_state.workflow_manager = WorkflowManager()
-
-if "user_id" not in st.session_state:
-    st.session_state.user_id = str(uuid.uuid4())
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-st.title("💖 LoveBot: AI Relationship Assistant")
-
-# Custom Knowledge Input
-with st.expander("📥 Add Custom Knowledge"):
-    custom_input = st.text_area(
-        "Enter your relationship insight:",
-        help="Share your relationship wisdom (max 10,000 characters)",
-        max_chars=10000,
-        key="custom_input_widget"
-    )
-    
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        if st.button("💾 Save", 
-                   key="custom_save_button",
-                   use_container_width=True):
-            if custom_input.strip():
-                try:
-                    success = st.session_state.workflow_manager.knowledge.add_knowledge(
-                        text=custom_input,
-                        source_type="user"
-                    )
-                    if success:
-                        st.success("✅ Knowledge saved successfully!")
-                        st.session_state.custom_input_widget = ""
-                    else:
-                        st.error("Failed to save knowledge")
-                except Exception as e:
-                    st.error(f"Error saving knowledge: {str(e)}")
-            else:
-                st.warning("Please enter valid text to save")
-
-# Chat Interface
-chat_container = st.container()
-with chat_container:
-    for role, text in st.session_state.messages:
-        avatar = "👤" if role == "user" else "💖"
-        with st.chat_message(role, avatar=avatar):
-            st.write(text)
-
-    if prompt := st.chat_input("Ask about relationships...", key="chat_input"):
-        st.session_state.messages.append(("user", prompt))
+    # Custom Knowledge Input
+    with st.expander("📥 Add Custom Knowledge", expanded=False):
+        custom_input = st.text_area(
+            "Enter your relationship insight:",
+            value=st.session_state.custom_input,
+            help="Share your relationship wisdom (max 10,000 characters)",
+            max_chars=10000,
+            key="custom_input_widget"
+        )
         
-        with st.status("💞 Processing your question...", expanded=True) as status:
-            try:
-                status.write("🔍 Searching knowledge base...")
-                result = st.session_state.workflow_manager.workflow.invoke({
-                    "messages": [m[1] for m in st.session_state.messages],
-                    "knowledge_context": "",
-                    "web_context": "",
-                    "user_id": st.session_state.user_id
-                })
-                
-                if result.get("response"):
-                    st.session_state.messages.append(("assistant", result["response"]))
-                    status.update(label="✅ Response ready", state="complete")
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("💾 Save", 
+                       key="custom_save_button",
+                       use_container_width=True):
+                if custom_input.strip():
+                    try:
+                        success = st.session_state.workflow_manager.knowledge.add_knowledge(
+                            text=custom_input,
+                            source_type="user"
+                        )
+                        if success:
+                            st.success("✅ Knowledge saved successfully!")
+                            st.session_state.custom_input = ""
+                        else:
+                            st.error("Failed to save knowledge")
+                    except Exception as e:
+                        st.error(f"Error saving knowledge: {str(e)}")
                 else:
-                    status.update(label="❌ No response generated", state="error")
-                    st.error("Failed to generate response. Please try again.")
-                    
-            except Exception as e:
-                status.update(label="❌ Error processing request", state="error")
-                st.error(f"An error occurred: {str(e)}")
-                logging.error(traceback.format_exc())
-        st.rerun()
+                    st.warning("Please enter valid text to save")
 
-st.markdown("---")
-st.markdown("💝 **LoveBot** - Your AI Relationship Assistant")
+    # Chat Interface
+    chat_container = st.container()
+    with chat_container:
+        for role, text in st.session_state.messages:
+            avatar = "👤" if role == "user" else "💖"
+            with st.chat_message(role, avatar=avatar):
+                st.write(text)
+
+        if prompt := st.chat_input("Ask about relationships...", key="chat_input"):
+            st.session_state.messages.append(("user", prompt))
+            
+            with st.status("💞 Processing your question...", expanded=True) as status:
+                try:
+                    status.write("🔍 Searching knowledge base...")
+                    result = st.session_state.workflow_manager.workflow.invoke({
+                        "messages": [m[1] for m in st.session_state.messages],
+                        "knowledge_context": "",
+                        "web_context": "",
+                        "user_id": st.session_state.user_id
+                    })
+                    
+                    if result.get("response"):
+                        st.session_state.messages.append(("assistant", result["response"]))
+                        status.update(label="✅ Response ready", state="complete")
+                    else:
+                        status.update(label="❌ No response generated", state="error")
+                        st.error("Failed to generate response. Please try again.")
+                        
+                except Exception as e:
+                    status.update(label="❌ Error processing request", state="error")
+                    st.error(f"An error occurred: {str(e)}")
+                    logging.error(traceback.format_exc())
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("💝 **LoveBot** - Your AI Relationship Assistant")
+
+if __name__ == "__main__":
+    main()
