@@ -21,6 +21,7 @@ from langgraph.graph import StateGraph, END
 from langchain_huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import streamlit as st
+import socket
 
 # =====================
 # 🧠 Core AI Components
@@ -46,19 +47,29 @@ class NeuroState(TypedDict):
 class QuantumKnowledgeManager:
     def __init__(self, token: str, db_id: str, region: str):
         try:
+            # Verify network connectivity first
+            socket.create_connection(("apps.astra.datastax.com", 443), timeout=5)
+            
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=config.embedding_model,
                 encode_kwargs={'normalize_embeddings': True},
                 model_kwargs={'device': config.device}
             )
             self.client = DataAPIClient(token)
-            self.db = self.client.get_database_by_api_endpoint(
-                f"https://{db_id}-{region}.apps.astra.datastax.com"
-            )
+            
+            # Correct endpoint format for Astra DB
+            endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
+            self.db = self.client.get_database_by_api_endpoint(endpoint)
+            
             if "lovebot_2025" not in self.db.list_collection_names():
                 self.collection = self.db.create_collection("lovebot_2025")
             else:
                 self.collection = self.db.get_collection("lovebot_2025")
+                
+        except socket.timeout:
+            raise RuntimeError("🚨 Network timeout! Check internet connection")
+        except socket.gaierror:
+            raise RuntimeError("🔍 DNS resolution failed! Verify region format: 'us-east1' not 'us-east-1'")
         except Exception as e:
             raise RuntimeError(f"DB connection failed: {str(e)}")
 
@@ -181,14 +192,14 @@ class LoveFlow2025:
 # =====================
 def validate_credentials(db_id: str, region: str) -> bool:
     uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+-\d$")
+    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+[0-9]$")  # Accepts both 'us-east1' and 'us-east-1'
     
     if not uuid_pattern.match(db_id):
         st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
         return False
         
     if not region_pattern.match(region):
-        st.error("❌ Invalid Region! Use format like 'us-east-1'")
+        st.error("❌ Invalid Region! Use format like 'us-east1'")
         return False
         
     return True
@@ -204,7 +215,7 @@ st.write("""
 # Pre-configured credentials
 ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
-REGION = "us-east-1"
+REGION = "us-east1"  # Correct region format
 GROQ_KEY = "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"
 
 with st.sidebar:
@@ -225,13 +236,19 @@ with st.sidebar:
                     db_creds={
                         "token": astra_db_token,
                         "db_id": astra_db_id,
-                        "region": astra_db_region
+                        "region": astra_db_region.replace("-", "")  # Auto-correct region format
                     },
                     api_key=groq_key
                 )
                 st.success("✅ Quantum connection established!")
             except Exception as e:
-                st.error(f"❌ Connection failed: {traceback.format_exc()}")
+                st.error(f"""
+                ❌ Connection failed: {str(e)}
+                🔧 Troubleshooting Steps:
+                1. Verify region format: 'us-east1' not 'us-east-1'
+                2. Check network connectivity
+                3. Ensure token has 'Database Administrator' role
+                """)
         else:
             st.error("Fix validation errors first")
 
