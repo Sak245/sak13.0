@@ -57,7 +57,7 @@ class QuantumKnowledgeManager:
             )
             self.client = DataAPIClient(token)
             
-            # Construct endpoint using EXACT region format from dashboard
+            # Construct endpoint using EXACT format from dashboard
             endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
             self.db = self.client.get_database_by_api_endpoint(endpoint)
             
@@ -69,7 +69,7 @@ class QuantumKnowledgeManager:
         except socket.timeout:
             raise RuntimeError("🚨 Network timeout! Check internet connection")
         except socket.gaierror:
-            raise RuntimeError("🔍 DNS resolution failed! Verify EXACT region format: 'us-east1'")
+            raise RuntimeError(f"🔍 DNS error! Verify endpoint format: {endpoint}")
         except Exception as e:
             raise RuntimeError(f"DB connection failed: {str(e)}")
 
@@ -192,7 +192,7 @@ class LoveFlow2025:
 # =====================
 def validate_credentials(db_id: str, region: str) -> bool:
     uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+[0-9]$")  # Matches "us-east1"
+    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+-\d$")  # Matches "us-east1"
     
     if not uuid_pattern.match(db_id):
         st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
@@ -212,7 +212,7 @@ st.write("""
 </style>
 """, unsafe_allow_html=True)
 
-# Verified credentials from your dashboard
+# Verified credentials from dashboard
 ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
 REGION = "us-east1"  # EXACT format from dashboard
@@ -236,7 +236,7 @@ with st.sidebar:
                     db_creds={
                         "token": astra_db_token,
                         "db_id": astra_db_id,
-                        "region": astra_db_region  # No format modification
+                        "region": astra_db_region  # No format changes
                     },
                     api_key=groq_key
                 )
@@ -245,10 +245,9 @@ with st.sidebar:
                 st.error(f"""
                 ❌ Connection failed: {str(e)}
                 🔧 Final Verification:
-                1. Confirm EXACT region format: 'us-east1'
-                2. Token must have 'Database Administrator' role
-                3. Whitelist IP if behind firewall
-                4. Check token expiration date
+                1. Confirm token role: 'Database Administrator'
+                2. Whitelist IP in Astra DB dashboard
+                3. Verify endpoint: https://{DB_ID}-{REGION}.apps.astra.datastax.com
                 """)
         else:
             st.error("Fix validation errors first")
