@@ -50,17 +50,17 @@ class QuantumKnowledgeManager:
             self.client = DataAPIClient(token)
             self.db = self.client.get_database_by_api_endpoint(self.endpoint)
             
-            # Initialize with latest collection schema
-            if "lovebot_2025" not in self.db.list_collection_names():
+            # Initialize with SAK collection
+            if "sak" not in self.db.list_collection_names():
                 self.collection = self.db.create_collection(
-                    "lovebot_2025",
+                    "sak",
                     options={"vector": {
                         "dimension": 384,
                         "metric": "cosine"
                     }}
                 )
             else:
-                self.collection = self.db.get_collection("lovebot_2025")
+                self.collection = self.db.get_collection("sak")
                 
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=config.embedding_model,
@@ -80,7 +80,7 @@ class QuantumKnowledgeManager:
                from astrapy import DataAPIClient
                client = DataAPIClient("{token}")
                db = client.get_database_by_api_endpoint("{self.endpoint}")
-               print(db.list_collection_names())
+               print('Existing collections:', db.list_collection_names())  # Should include 'sak'
                ```""")
 
     def _process_content(self, content: str) -> List[str]:
@@ -222,7 +222,7 @@ st.write("""
 </style>
 """, unsafe_allow_html=True)
 
-# Updated credentials
+# Security credentials
 ASTRA_TOKEN = "AstraCS:YzTkrbyuwALNUbsxXYYEOlHi:e7d4e9f2ad71f198b962813cd535f3a2a6f6bf9ea88420d286aca5803e280a89"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
 REGION = "us-east-1"
@@ -265,7 +265,7 @@ with st.sidebar:
                    from astrapy import DataAPIClient
                    client = DataAPIClient("{astra_db_token}")
                    db = client.get_database_by_api_endpoint("{endpoint}")
-                   print(db.list_collection_names())
+                   print('Collections:', db.list_collection_names())  # Should include 'sak'
                    ```""")
         else:
             st.error("Fix validation errors first")
