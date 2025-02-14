@@ -46,6 +46,7 @@ class NeuroState(TypedDict):
 
 class QuantumKnowledgeManager:
     def __init__(self, token: str, db_id: str, region: str):
+        endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
         try:
             # Verify network connectivity first
             socket.create_connection(("apps.astra.datastax.com", 443), timeout=5)
@@ -56,9 +57,6 @@ class QuantumKnowledgeManager:
                 model_kwargs={'device': config.device}
             )
             self.client = DataAPIClient(token)
-            
-            # Construct endpoint using EXACT format from dashboard
-            endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
             self.db = self.client.get_database_by_api_endpoint(endpoint)
             
             if "lovebot_2025" not in self.db.list_collection_names():
@@ -71,7 +69,7 @@ class QuantumKnowledgeManager:
         except socket.gaierror:
             raise RuntimeError(f"🔍 DNS error! Verify endpoint: {endpoint}")
         except Exception as e:
-            raise RuntimeError(f"DB connection failed: {str(e)}")
+            raise RuntimeError(f"DB connection failed: {str(e)}\nEndpoint: {endpoint}")
 
     def _process_content(self, content: str) -> List[str]:
         return [content[i:i+config.pdf_chunk_size] 
@@ -192,14 +190,14 @@ class LoveFlow2025:
 # =====================
 def validate_credentials(db_id: str, region: str) -> bool:
     uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+\d$")  # Corrected pattern for 'us-east1'
+    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+\d$")
     
     if not uuid_pattern.match(db_id):
         st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
         return False
         
     if not region_pattern.match(region):
-        st.error("❌ Invalid Region! Use EXACT format like 'us-east1' (no hyphen before number)")
+        st.error("❌ Invalid Region! Use EXACT format like 'us-east1'")
         return False
         
     return True
@@ -215,7 +213,7 @@ st.write("""
 # Verified credentials from dashboard
 ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
-REGION = "us-east1"  # EXACT format from dashboard
+REGION = "us-east1"
 GROQ_KEY = "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"
 
 with st.sidebar:
@@ -236,19 +234,20 @@ with st.sidebar:
                     db_creds={
                         "token": astra_db_token,
                         "db_id": astra_db_id,
-                        "region": astra_db_region  # No format changes
+                        "region": astra_db_region
                     },
                     api_key=groq_key
                 )
                 st.success("✅ Quantum connection established!")
             except Exception as e:
+                endpoint = f"https://{astra_db_id}-{astra_db_region}.apps.astra.datastax.com"
                 st.error(f"""
                 ❌ Connection failed: {str(e)}
-                🔧 Final Verification:
-                1. Confirm region format: 'us-east1' (NOT 'us-east-1')
-                2. Check token permissions in Astra DB dashboard
-                3. Whitelist IP if behind firewall
-                4. Verify endpoint: https://{DB_ID}-{REGION}.apps.astra.datastax.com
+                🔰 SOLUTION STEPS:
+                1. WHITELIST IP: https://docs.datastax.com/en/astra/docs/manage-org-details.html#ip-addresses
+                2. Verify token role: 'Database Administrator' 
+                3. Test endpoint: {endpoint}
+                4. Check token status
                 """)
         else:
             st.error("Fix validation errors first")
