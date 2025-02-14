@@ -202,14 +202,14 @@ class LoveFlow2025:
 # =====================
 def validate_credentials(db_id: str, region: str) -> bool:
     uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+\d$")
+    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+\d+$")  # Updated region pattern
     
     if not uuid_pattern.match(db_id):
         st.error("❌ Invalid DB Cluster ID! Must be UUID format")
         return False
         
     if not region_pattern.match(region):
-        st.error("❌ Region must be format 'us-east1'")
+        st.error("❌ Region must be format 'us-east1' or similar")
         return False
         
     return True
@@ -222,7 +222,7 @@ st.write("""
 </style>
 """, unsafe_allow_html=True)
 
-# Updated credentials from Feb 15
+# Updated credentials
 ASTRA_TOKEN = "AstraCS:YzTkrbyuwALNUbsxXYYEOlHi:e7d4e9f2ad71f198b962813cd535f3a2a6f6bf9ea88420d286aca5803e280a89"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
 REGION = "us-east1"
