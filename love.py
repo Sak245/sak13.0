@@ -50,15 +50,21 @@ class QuantumKnowledgeManager:
             self.client = DataAPIClient(token)
             self.db = self.client.get_database_by_api_endpoint(self.endpoint)
             
-            # Initialize with SAK collection
+            # SAK Collection Configuration
             if "sak" not in self.db.list_collection_names():
-                self.collection = self.db.create_collection(
-                    "sak",
-                    options={"vector": {
-                        "dimension": 384,
-                        "metric": "cosine"
-                    }}
-                )
+                try:
+                    self.collection = self.db.create_collection(
+                        "sak",
+                        options={"vector": {
+                            "dimension": 384,
+                            "metric": "cosine"
+                        }}
+                    )
+                    logging.info("Created new SAK collection")
+                except Exception as create_error:
+                    raise RuntimeError(f"""🚨 Collection Creation Failed
+                    Ensure your token has 'Database Administrator' privileges
+                    Raw error: {str(create_error)}""")
             else:
                 self.collection = self.db.get_collection("sak")
                 
@@ -69,23 +75,26 @@ class QuantumKnowledgeManager:
             )
             
         except Exception as e:
-            raise RuntimeError(f"""🚀 Quantum Connection Protocol Failed
-            🔑 Token: {token[:15]}... (Database Administrator role)
-            🌍 Endpoint: {self.endpoint}
-            🔧 REQUIRED ACTIONS:
-            1. WHITELIST IP: https://dtsx.io/ip-whitelist-guide
-            2. Verify token permissions
-            3. Test connection manually:
+            raise RuntimeError(f"""🔌 Quantum Connection Failure
+            Endpoint: {self.endpoint}
+            Token: {token[:25]}... (Full: {token[:15]}...{token[-10:]})
+            Diagnostic Steps:
+            1. IP Whitelisting: https://dtsx.io/ip-whitelist-guide
+            2. Token Verification: https://astra.datastax.com/org/tokens
+            3. Connection Test:
                ```python
                from astrapy import DataAPIClient
-               client = DataAPIClient("{token}")
-               db = client.get_database_by_api_endpoint("{self.endpoint}")
-               print('Existing collections:', db.list_collection_names())  # Should include 'sak'
+               try:
+                   client = DataAPIClient("{token}")
+                   db = client.get_database_by_api_endpoint("{self.endpoint}")
+                   print("Collections:", db.list_collection_names())
+               except Exception as e:
+                   print("Connection failed:", str(e))
                ```""")
 
     def _process_content(self, content: str) -> List[str]:
         return [content[i:i+config.pdf_chunk_size] 
-                for i in range(0, len(content), config.pdf_chunk_size)]
+                for i in range(0, len(content), config.pdf_chunk_size]
 
     def add_knowledge(self, content: str, source: str):
         try:
@@ -217,8 +226,8 @@ def validate_credentials(db_id: str, region: str) -> bool:
 st.set_page_config(page_title="LoveBot 2025", page_icon="💞", layout="wide")
 st.write("""
 <style>
-    .reportview-container {background: #fff5f8}
-    [data-testid="stStatusWidget"] {display: none}
+    .stAlert {padding: 20px!important; border-radius: 10px!important;}
+    .stTextInput input {border: 1px solid #ff69b4!important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -254,19 +263,23 @@ with st.sidebar:
             except Exception as e:
                 endpoint = f"https://{astra_db_id}-{astra_db_region}.apps.astra.datastax.com"
                 st.error(f"""
-                ❌ Quantum Link Failure
-                🔑 Token: {astra_db_token[:15]}... (Database Administrator)
-                🌍 Endpoint: {endpoint}
-                🔥 CRITICAL STEPS:
-                1. IP Whitelisting: https://dtsx.io/ip-whitelist-guide
-                2. Verify token in Astra Dashboard
-                3. Test connection:
-                   ```python
-                   from astrapy import DataAPIClient
-                   client = DataAPIClient("{astra_db_token}")
-                   db = client.get_database_by_api_endpoint("{endpoint}")
-                   print('Collections:', db.list_collection_names())  # Should include 'sak'
-                   ```""")
+                ❗ Critical Connection Failure
+                Endpoint: {endpoint}
+                Token: {astra_db_token[:25]}... (Full: {astra_db_token[:15]}...{astra_db_token[-10:]})
+                
+                🔥 REQUIRED ACTIONS:
+                1. Verify IP Whitelisting: https://dtsx.io/ip-whitelist-guide
+                2. Check Token Permissions: https://astra.datastax.com/org/tokens
+                3. Test Connection Manually:
+                ```python
+                from astrapy import DataAPIClient
+                try:
+                    client = DataAPIClient("{astra_db_token}")
+                    db = client.get_database_by_api_endpoint("{endpoint}")
+                    print("Collections:", db.list_collection_names())
+                except Exception as e:
+                    print("ERROR:", str(e))
+                ```""")
         else:
             st.error("Fix validation errors first")
 
