@@ -12,8 +12,7 @@ import tempfile
 import torch
 import transformers
 import fitz
-from cassandra.cluster import Cluster
-from cassandra.auth import PlainTextAuthProvider
+from astrapy import DataAPIClient
 
 # Workaround for Streamlit watcher bug
 sys.modules['torch.classes'] = None
@@ -75,18 +74,16 @@ st.write("""
 """, unsafe_allow_html=True)
 
 # =====================
-# 🔑 API Key Handling
+# 🔑 Credential Handling
 # =====================
 with st.sidebar:
     st.header("🔐 Database & API Configuration")
     
     # Astra DB Credentials
     st.subheader("Astra DB Credentials")
+    astra_db_token = st.text_input("Astra DB Token", type="password")
     astra_db_id = st.text_input("Astra DB ID", type="password")
     astra_db_region = st.text_input("Astra DB Region", type="password")
-    astra_db_app_token = st.text_input("Astra DB Application Token", type="password")
-    astra_db_client_id = st.text_input("Astra DB Client ID", type="password")
-    astra_db_client_secret = st.text_input("Astra DB Client Secret", type="password")
     
     # Groq API Key
     st.subheader("Groq API Configuration")
@@ -96,7 +93,8 @@ with st.sidebar:
     st.header("📊 System Status")
     st.write(f"**Processing Device:** {config.device.upper()}")
 
-if not all([astra_db_id, astra_db_region, astra_db_app_token, astra_db_client_id, astra_db_client_secret]):
+# Validate credentials
+if not all([astra_db_token, astra_db_id, astra_db_region]):
     st.error("Please provide all Astra DB credentials to proceed.")
     st.stop()
 
@@ -108,39 +106,22 @@ if not groq_key:
 # 📚 Astra DB Knowledge Management
 # =====================
 class KnowledgeManager:
-    def __init__(self, credentials: dict):
+    def __init__(self, token: str, db_id: str, region: str):
         self.embeddings = HuggingFaceEmbeddings(
             model_name=config.embedding_model,
             encode_kwargs={'normalize_embeddings': True}
         )
         
-        cloud_config = {
-            'secure_connect_bundle': f'https://{astra_db_id}-{astra_db_region}.apps.astra.datastax.com/api/secure-connect-db.zip'
-        }
-        
-        auth_provider = PlainTextAuthProvider(
-            astra_db_client_id,
-            astra_db_client_secret
+        self.client = DataAPIClient(token)
+        self.db = self.client.get_database_by_api_endpoint(
+            f"https://{db_id}-{region}.apps.astra.datastax.com"
         )
         
-        self.cluster = Cluster(cloud=cloud_config, auth_provider=auth_provider)
-        self.session = self.cluster.connect()
-        self._init_db()
-
-    def _init_db(self):
-        self.session.execute("""
-            CREATE KEYSPACE IF NOT EXISTS lovebot 
-            WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
-        """)
-        self.session.execute("""
-            CREATE TABLE IF NOT EXISTS lovebot.knowledge (
-                id UUID PRIMARY KEY,
-                text TEXT,
-                embedding LIST<FLOAT>,
-                source_type TEXT,
-                created_at TIMESTAMP
-            )
-        """)
+        # Initialize collection
+        if "lovebot_knowledge" not in self.db.list_collection_names():
+            self.collection = self.db.create_collection("lovebot_knowledge")
+        else:
+            self.collection = self.db.get_collection("lovebot_knowledge")
 
     def _pdf_to_text(self, pdf_bytes: bytes) -> List[str]:
         try:
@@ -210,32 +191,27 @@ class KnowledgeManager:
 
     def _add_single_knowledge(self, text: str, source_type: str):
         embedding = self.embeddings.embed_query(text)
-        point_id = uuid.uuid4()
         
-        self.session.execute(
-            """
-            INSERT INTO lovebot.knowledge (id, text, embedding, source_type, created_at)
-            VALUES (%s, %s, %s, %s, toTimestamp(now()))
-            """,
-            (point_id, text, embedding, source_type)
-        )
+        self.collection.insert_one({
+            "text": text,
+            "embedding": embedding,
+            "source_type": source_type
+        })
 
     def search_knowledge(self, query: str, limit=3) -> List[str]:
         try:
             query_embedding = self.embeddings.embed_query(query)
-            results = self.session.execute(
-                """
-                SELECT text, embedding 
-                FROM lovebot.knowledge 
-                ORDER BY cosine_similarity(embedding, %s) DESC 
-                LIMIT %s
-                """,
-                (query_embedding, limit)
+            results = self.collection.find(
+                {},
+                vector=query_embedding,
+                limit=limit
             )
-            return [row.text for row in results]
+            return [doc["text"] for doc in results["data"]["documents"]]
         except Exception as e:
             logging.error(f"Search error: {str(e)}")
             return []
+
+# ... [Keep the rest of the code from previous implementation unchanged] ...
 
 # =====================
 # 🔍 Search Management
