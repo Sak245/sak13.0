@@ -7,11 +7,11 @@ import re
 import uuid
 import time
 import logging
+import traceback
 import torch
 import fitz
 import numpy as np
 from typing import TypedDict, List
-from functools import lru_cache
 from cachetools import TTLCache
 import transformers
 from astrapy import DataAPIClient
@@ -35,28 +35,21 @@ class Config:
         self.pdf_chunk_size = 750
         self.search_depth = 5
         
-        self._validate()
-        
-    def _validate(self):
-        uuid_pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        if not re.match(uuid_pattern, "00000000-0000-0000-0000-000000000000"):
-            raise ValueError("Invalid UUID pattern configuration")
-
 config = Config()
 
 # =====================
 # 🔐 Security Configuration
 # =====================
-def validate_credentials(token: str, db_id: str, region: str):
-    uuid_pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-    region_pattern = r"^[a-z]{2}-[a-z]+\d$"  # Updated for us-east1 format
+def validate_credentials(db_id: str, region: str) -> bool:
+    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+-\d$")  # Corrected for us-east-1
     
-    if not re.match(uuid_pattern, db_id):
+    if not uuid_pattern.match(db_id):
         st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
         return False
         
-    if not re.match(region_pattern, region):
-        st.error("❌ Invalid Region! Use format like 'us-east1'")
+    if not region_pattern.match(region):
+        st.error("❌ Invalid Region! Use format like 'us-east-1'")
         return False
         
     return True
@@ -69,14 +62,13 @@ st.write("""
 <style>
     .reportview-container {background: #fff5f8}
     [data-testid="stStatusWidget"] {display: none}
-    .pdf-uploader section {padding: 2rem}
 </style>
 """, unsafe_allow_html=True)
 
 # Pre-configured credentials
 ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
-REGION = "us-east1"
+REGION = "us-east-1"  # Corrected region format
 GROQ_KEY = "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"
 
 with st.sidebar:
@@ -91,7 +83,7 @@ with st.sidebar:
         groq_key = st.text_input("NeuroKey", value=GROQ_KEY, type="password")
 
     if st.button("🚀 Initialize Quantum Connection", type="primary"):
-        if validate_credentials(astra_db_id, astra_db_region, astra_db_token):
+        if validate_credentials(astra_db_id, astra_db_region):
             try:
                 st.session_state.neuro_flow = LoveFlow2025(
                     db_creds={
@@ -125,22 +117,16 @@ class QuantumKnowledgeManager:
                 encode_kwargs={'normalize_embeddings': True},
                 model_kwargs={'device': config.device}
             )
-        except Exception as e:
-            raise RuntimeError(f"Embedding init failed: {str(e)}")
-            
-        try:
             self.client = DataAPIClient(token)
             self.db = self.client.get_database_by_api_endpoint(
                 f"https://{db_id}-{region}.apps.astra.datastax.com"
             )
-            self.collection = self.db.create_collection("lovebot_2025") \
-                if "lovebot_2025" not in self.db.list_collection_names() \
-                else self.db.get_collection("lovebot_2025")
+            self.collection = self.db.get_collection("lovebot_2025")
         except Exception as e:
             raise RuntimeError(f"DB connection failed: {str(e)}")
 
     def _process_content(self, content: str) -> List[str]:
-        return [content[i:i+config.max_text_length] 
+        return [content[i:i+config.pdf_chunk_size] 
                 for i in range(0, len(content), config.pdf_chunk_size)]
 
     def add_knowledge(self, content: str, source: str):
@@ -209,17 +195,15 @@ class NeuroLoveAI:
                 temperature=0.7,
                 max_tokens=500
             )
-            
             output = response.choices[0].message.content
             return output if self._safety_check(output) else "🚫 Response filtered"
-            
         except Exception as e:
             logging.error(f"Generation error: {str(e)}")
             return "🌈 Every challenge is growth. Could you share more?"
 
     def _safety_check(self, text: str) -> bool:
         try:
-            result = self.safety(text[:512])  # Truncate for safety model
+            result = self.safety(text[:512])
             return result[0]['label'] == 'SAFE'
         except Exception as e:
             logging.error(f"Safety check error: {str(e)}")
@@ -242,16 +226,13 @@ class LoveFlow2025:
 
     def _build_neural_graph(self):
         workflow = StateGraph(NeuroState)
-        
         workflow.add_node("retrieve_memories", self._remember)
         workflow.add_node("search_web", self._search)
         workflow.add_node("synthesize", self._synthesize)
-        
         workflow.set_entry_point("retrieve_memories")
         workflow.add_edge("retrieve_memories", "search_web")
         workflow.add_edge("search_web", "synthesize")
         workflow.add_edge("synthesize", END)
-        
         return workflow.compile()
 
     def _remember(self, state: NeuroState) -> dict:
@@ -289,7 +270,8 @@ with st.expander("🧠 Upload Relationship Knowledge"):
         for file in uploaded_files:
             try:
                 if file.type == "application/pdf":
-                    content = fitz.open(stream=file.read(), filetype="pdf").get_text("text")
+                    doc = fitz.open(stream=file.read(), filetype="pdf")
+                    content = "".join(page.get_text() for page in doc)
                 else:
                     content = file.read().decode()
                 st.session_state.neuro_flow.knowledge.add_knowledge(content, file.name)
@@ -317,10 +299,8 @@ if prompt := st.chat_input("Share your relationship thoughts..."):
                     "web_context": "",
                     "user_id": st.session_state.user_id
                 })
-                
                 response = result.get("response", "Let's explore this together...")
                 st.session_state.dialog.append({"role": "assistant", "content": response})
-                
         except Exception as e:
             st.error("Quantum connection unstable - try again")
             logging.error(f"Main flow error: {traceback.format_exc()}")
