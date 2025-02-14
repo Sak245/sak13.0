@@ -22,6 +22,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import streamlit as st
 import socket
+import requests
 
 # =====================
 # 🧠 Core AI Components
@@ -46,10 +47,12 @@ class NeuroState(TypedDict):
 
 class QuantumKnowledgeManager:
     def __init__(self, token: str, db_id: str, region: str):
-        endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
+        self.endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
         try:
-            # Verify network connectivity first
-            socket.create_connection(("apps.astra.datastax.com", 443), timeout=5)
+            # Pre-check endpoint accessibility
+            response = requests.get(self.endpoint, timeout=10)
+            if response.status_code != 200:
+                raise ConnectionError(f"Endpoint unreachable (HTTP {response.status_code})")
             
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=config.embedding_model,
@@ -57,19 +60,25 @@ class QuantumKnowledgeManager:
                 model_kwargs={'device': config.device}
             )
             self.client = DataAPIClient(token)
-            self.db = self.client.get_database_by_api_endpoint(endpoint)
+            self.db = self.client.get_database_by_api_endpoint(self.endpoint)
             
             if "lovebot_2025" not in self.db.list_collection_names():
                 self.collection = self.db.create_collection("lovebot_2025")
             else:
                 self.collection = self.db.get_collection("lovebot_2025")
                 
-        except socket.timeout:
-            raise RuntimeError("🚨 Network timeout! Check internet connection")
-        except socket.gaierror:
-            raise RuntimeError(f"🔍 DNS error! Verify endpoint: {endpoint}")
         except Exception as e:
-            raise RuntimeError(f"DB connection failed: {str(e)}\nEndpoint: {endpoint}")
+            raise RuntimeError(f"""🚨 Connection failed: {str(e)}
+            🔥 REQUIRED ACTIONS:
+            1. Whitelist IP: https://docs.datastax.com/en/astra/docs/manage-org-details.html#ip-addresses
+            2. Verify token has 'Database Administrator' role
+            3. Test endpoint manually: 
+               ```python
+               from astrapy import DataAPIClient
+               client = DataAPIClient("{token}")
+               db = client.get_database_by_api_endpoint("{self.endpoint}")
+               print(db.list_collection_names())
+               ```""")
 
     def _process_content(self, content: str) -> List[str]:
         return [content[i:i+config.pdf_chunk_size] 
@@ -210,8 +219,8 @@ st.write("""
 </style>
 """, unsafe_allow_html=True)
 
-# Verified credentials from dashboard
-ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
+# Updated credentials from dashboard
+ASTRA_TOKEN = "AstraCS:StvvgQYXxisnrwROtPcrZKEp:0adda620b2659051ba5075e1dcbb81ddc6fa0493a251eee4e4d76dff735c1d31"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
 REGION = "us-east1"
 GROQ_KEY = "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"
@@ -243,12 +252,17 @@ with st.sidebar:
                 endpoint = f"https://{astra_db_id}-{astra_db_region}.apps.astra.datastax.com"
                 st.error(f"""
                 ❌ Connection failed: {str(e)}
-                🔰 SOLUTION STEPS:
-                1. WHITELIST IP: https://docs.datastax.com/en/astra/docs/manage-org-details.html#ip-addresses
-                2. Verify token role: 'Database Administrator' 
-                3. Test endpoint: {endpoint}
-                4. Check token status
-                """)
+                🔥 IMMEDIATE ACTION REQUIRED:
+                1. Go to Astra Dashboard → Organization Settings → IP Access List
+                2. Click "Add Current IP Address"
+                3. Verify token role is 'Database Administrator'
+                4. Test endpoint manually:
+                   ```python
+                   from astrapy import DataAPIClient
+                   client = DataAPIClient("{astra_db_token}")
+                   db = client.get_database_by_api_endpoint("{endpoint}")
+                   print(db.list_collection_names())
+                   ```""")
         else:
             st.error("Fix validation errors first")
 
