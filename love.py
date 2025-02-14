@@ -148,7 +148,7 @@ class QuantumKnowledgeManager:
 
     def _process_content(self, content: str) -> List[str]:
         return [content[i:i+config.max_text_length] 
-                for i in range(0, len(content), config.pdf_chunk_size]
+                for i in range(0, len(content), config.pdf_chunk_size])
 
     def add_knowledge(self, content: str, source: str):
         try:
