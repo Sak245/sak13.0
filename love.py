@@ -2,14 +2,11 @@
 # 🛠️ Initial Configuration
 # =====================
 import sys
-sys.modules['torch.classes'] = None  # Legacy compatibility
-
-import warnings
-import os
+sys.modules['torch.classes'] = None
 import re
-import logging
 import uuid
 import time
+import logging
 import torch
 import fitz
 import numpy as np
@@ -31,7 +28,7 @@ import streamlit as st
 class Config:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"  # Verified model
+        self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
         self.rate_limit = 100
         self.max_text_length = 1500
@@ -44,17 +41,28 @@ class Config:
         uuid_pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
         if not re.match(uuid_pattern, "00000000-0000-0000-0000-000000000000"):
             raise ValueError("Invalid UUID pattern configuration")
-        
-        try:
-            transformers.AutoModel.from_pretrained(self.embedding_model)
-            transformers.AutoModelForSequenceClassification.from_pretrained(self.safety_model)
-        except Exception as e:
-            raise RuntimeError(f"Model verification failed: {str(e)}")
 
 config = Config()
 
 # =====================
-# 🔐 Streamlit Interface
+# 🔐 Security Configuration
+# =====================
+def validate_credentials(token: str, db_id: str, region: str):
+    uuid_pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    region_pattern = r"^[a-z]{2}-[a-z]+\d$"  # Updated for us-east1 format
+    
+    if not re.match(uuid_pattern, db_id):
+        st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
+        return False
+        
+    if not re.match(region_pattern, region):
+        st.error("❌ Invalid Region! Use format like 'us-east1'")
+        return False
+        
+    return True
+
+# =====================
+# 💻 Streamlit Interface
 # =====================
 st.set_page_config(page_title="LoveBot 2025", page_icon="💞", layout="wide")
 st.write("""
@@ -65,40 +73,25 @@ st.write("""
 </style>
 """, unsafe_allow_html=True)
 
-# =====================
-# 🔑 Quantum Security Setup
-# =====================
-def validate_credentials(token: str, db_id: str, region: str):
-    uuid_pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-    region_pattern = r"^[a-z]{2}-[a-z]+-\d$"
-    
-    if not re.match(uuid_pattern, db_id):
-        st.error("❌ Invalid DB Cluster ID format!\nMust be UUID format: 8-4-4-4-12 hex chars")
-        return False
-        
-    if not re.match(region_pattern, region):
-        st.error("❌ Invalid Region format!\nExample: us-east1")
-        return False
-        
-    return True
+# Pre-configured credentials
+ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
+DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
+REGION = "us-east1"
+GROQ_KEY = "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"
 
 with st.sidebar:
     st.header("🔐 2025 Security Configuration")
     
     with st.expander("Astra DB Quantum Security", expanded=True):
-        astra_db_token = st.text_input("Quantum Token", type="password",
-                                      help="From Astra DB → Organization Settings → Tokens")
-        astra_db_id = st.text_input("DB Cluster ID", type="password",
-                                   help="From Astra DB → Database Details → UUID")
-        astra_db_region = st.text_input("Neural Region", type="password",
-                                       help="From Astra DB → Database Details → Region")
-    
+        astra_db_token = st.text_input("Quantum Token", value=ASTRA_TOKEN, type="password")
+        astra_db_id = st.text_input("DB Cluster ID", value=DB_ID)
+        astra_db_region = st.text_input("Neural Region", value=REGION)
+
     with st.expander("Groq API v3"):
-        groq_key = st.text_input("NeuroKey", type="password",
-                                help="From Groq Console → API Keys")
-    
+        groq_key = st.text_input("NeuroKey", value=GROQ_KEY, type="password")
+
     if st.button("🚀 Initialize Quantum Connection", type="primary"):
-        if validate_credentials(astra_db_token, astra_db_id, astra_db_region):
+        if validate_credentials(astra_db_id, astra_db_region, astra_db_token):
             try:
                 st.session_state.neuro_flow = LoveFlow2025(
                     db_creds={
