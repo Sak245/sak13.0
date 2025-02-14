@@ -115,7 +115,7 @@ with st.sidebar:
         st.warning("🔴 System Offline")
 
 # =====================
-# � Quantum Knowledge Engine
+# 🧠 Quantum Knowledge Engine
 # =====================
 class QuantumKnowledgeManager:
     def __init__(self, token: str, db_id: str, region: str):
@@ -226,7 +226,7 @@ class NeuroLoveAI:
             return False
 
 # =====================
-# 🧩 Neural Workflow
+# � Neural Workflow
 # =====================
 class NeuroState(TypedDict):
     dialog: List[dict]
