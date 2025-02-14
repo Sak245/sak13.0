@@ -23,7 +23,7 @@ from groq import Groq
 import streamlit as st
 
 # =====================
-# ⚙️ Validated Configuration
+# 🧠 Core AI Components
 # =====================
 class Config:
     def __init__(self):
@@ -34,81 +34,15 @@ class Config:
         self.max_text_length = 1500
         self.pdf_chunk_size = 750
         self.search_depth = 5
-        
+
 config = Config()
 
-# =====================
-# 🔐 Security Configuration
-# =====================
-def validate_credentials(db_id: str, region: str) -> bool:
-    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+-\d$")  # Corrected for us-east-1
-    
-    if not uuid_pattern.match(db_id):
-        st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
-        return False
-        
-    if not region_pattern.match(region):
-        st.error("❌ Invalid Region! Use format like 'us-east-1'")
-        return False
-        
-    return True
+class NeuroState(TypedDict):
+    dialog: List[dict]
+    memories: List[str]
+    web_context: str
+    user_id: str
 
-# =====================
-# 💻 Streamlit Interface
-# =====================
-st.set_page_config(page_title="LoveBot 2025", page_icon="💞", layout="wide")
-st.write("""
-<style>
-    .reportview-container {background: #fff5f8}
-    [data-testid="stStatusWidget"] {display: none}
-</style>
-""", unsafe_allow_html=True)
-
-# Pre-configured credentials
-ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
-DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
-REGION = "us-east-1"  # Corrected region format
-GROQ_KEY = "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"
-
-with st.sidebar:
-    st.header("🔐 2025 Security Configuration")
-    
-    with st.expander("Astra DB Quantum Security", expanded=True):
-        astra_db_token = st.text_input("Quantum Token", value=ASTRA_TOKEN, type="password")
-        astra_db_id = st.text_input("DB Cluster ID", value=DB_ID)
-        astra_db_region = st.text_input("Neural Region", value=REGION)
-
-    with st.expander("Groq API v3"):
-        groq_key = st.text_input("NeuroKey", value=GROQ_KEY, type="password")
-
-    if st.button("🚀 Initialize Quantum Connection", type="primary"):
-        if validate_credentials(astra_db_id, astra_db_region):
-            try:
-                st.session_state.neuro_flow = LoveFlow2025(
-                    db_creds={
-                        "token": astra_db_token,
-                        "db_id": astra_db_id,
-                        "region": astra_db_region
-                    },
-                    api_key=groq_key
-                )
-                st.success("✅ Quantum connection established!")
-            except Exception as e:
-                st.error(f"❌ Connection failed: {str(e)}")
-        else:
-            st.error("Fix validation errors first")
-
-    st.header("📊 System Health")
-    if 'neuro_flow' in st.session_state:
-        st.success("🟢 System Operational")
-        st.metric("Processing Power", config.device.upper())
-    else:
-        st.warning("🔴 System Offline")
-
-# =====================
-# 🧠 Quantum Knowledge Engine
-# =====================
 class QuantumKnowledgeManager:
     def __init__(self, token: str, db_id: str, region: str):
         try:
@@ -121,7 +55,10 @@ class QuantumKnowledgeManager:
             self.db = self.client.get_database_by_api_endpoint(
                 f"https://{db_id}-{region}.apps.astra.datastax.com"
             )
-            self.collection = self.db.get_collection("lovebot_2025")
+            if "lovebot_2025" not in self.db.list_collection_names():
+                self.collection = self.db.create_collection("lovebot_2025")
+            else:
+                self.collection = self.db.get_collection("lovebot_2025")
         except Exception as e:
             raise RuntimeError(f"DB connection failed: {str(e)}")
 
@@ -161,9 +98,6 @@ class QuantumKnowledgeManager:
             logging.error(f"Memory retrieval error: {str(e)}")
             return []
 
-# =====================
-# 🧬 AI Neuro Service
-# =====================
 class NeuroLoveAI:
     def __init__(self, api_key: str):
         self.groq = Groq(api_key=api_key)
@@ -209,15 +143,6 @@ class NeuroLoveAI:
             logging.error(f"Safety check error: {str(e)}")
             return False
 
-# =====================
-# 🧩 Neural Workflow
-# =====================
-class NeuroState(TypedDict):
-    dialog: List[dict]
-    memories: List[str]
-    web_context: str
-    user_id: str
-
 class LoveFlow2025:
     def __init__(self, db_creds: dict, api_key: str):
         self.knowledge = QuantumKnowledgeManager(**db_creds)
@@ -250,6 +175,72 @@ class LoveFlow2025:
             context,
             state["user_id"]
         )}
+
+# =====================
+# 💻 Streamlit Interface
+# =====================
+def validate_credentials(db_id: str, region: str) -> bool:
+    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+-\d$")
+    
+    if not uuid_pattern.match(db_id):
+        st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
+        return False
+        
+    if not region_pattern.match(region):
+        st.error("❌ Invalid Region! Use format like 'us-east-1'")
+        return False
+        
+    return True
+
+st.set_page_config(page_title="LoveBot 2025", page_icon="💞", layout="wide")
+st.write("""
+<style>
+    .reportview-container {background: #fff5f8}
+    [data-testid="stStatusWidget"] {display: none}
+</style>
+""", unsafe_allow_html=True)
+
+# Pre-configured credentials
+ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
+DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
+REGION = "us-east-1"
+GROQ_KEY = "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"
+
+with st.sidebar:
+    st.header("🔐 2025 Security Configuration")
+    
+    with st.expander("Astra DB Quantum Security", expanded=True):
+        astra_db_token = st.text_input("Quantum Token", value=ASTRA_TOKEN, type="password")
+        astra_db_id = st.text_input("DB Cluster ID", value=DB_ID)
+        astra_db_region = st.text_input("Neural Region", value=REGION)
+
+    with st.expander("Groq API v3"):
+        groq_key = st.text_input("NeuroKey", value=GROQ_KEY, type="password")
+
+    if st.button("🚀 Initialize Quantum Connection", type="primary"):
+        if validate_credentials(astra_db_id, astra_db_region):
+            try:
+                st.session_state.neuro_flow = LoveFlow2025(
+                    db_creds={
+                        "token": astra_db_token,
+                        "db_id": astra_db_id,
+                        "region": astra_db_region
+                    },
+                    api_key=groq_key
+                )
+                st.success("✅ Quantum connection established!")
+            except Exception as e:
+                st.error(f"❌ Connection failed: {traceback.format_exc()}")
+        else:
+            st.error("Fix validation errors first")
+
+    st.header("📊 System Health")
+    if 'neuro_flow' in st.session_state:
+        st.success("🟢 System Operational")
+        st.metric("Processing Power", config.device.upper())
+    else:
+        st.warning("🔴 System Offline")
 
 # =====================
 # 💞 Main Interface
