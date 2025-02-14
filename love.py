@@ -74,13 +74,119 @@ class QuantumKnowledgeManager:
         except Exception as e:
             raise RuntimeError(f"DB connection failed: {str(e)}")
 
-    # ... (rest of QuantumKnowledgeManager methods remain same as previous version) ...
+    def _process_content(self, content: str) -> List[str]:
+        return [content[i:i+config.pdf_chunk_size] 
+                for i in range(0, len(content), config.pdf_chunk_size)]
+
+    def add_knowledge(self, content: str, source: str):
+        try:
+            chunks = self._process_content(content)
+            for chunk in chunks:
+                embedding = self.embeddings.embed_query(chunk)
+                self.collection.insert_one({
+                    "text": chunk,
+                    "embedding": embedding,
+                    "source": source,
+                    "timestamp": time.time()
+                })
+        except Exception as e:
+            logging.error(f"Knowledge injection error: {str(e)}")
+
+    def retrieve_memory(self, query: str, limit=5) -> List[str]:
+        try:
+            query_embed = self.embeddings.embed_query(query)
+            results = self.collection.aggregate([
+                {"$vectorSearch": {
+                    "queryVector": query_embed,
+                    "path": "embedding",
+                    "numCandidates": 150,
+                    "limit": limit,
+                    "index": "vector_index"
+                }},
+                {"$project": {"text": 1, "_id": 0}}
+            ])
+            return [doc["text"] for doc in results]
+        except Exception as e:
+            logging.error(f"Memory retrieval error: {str(e)}")
+            return []
 
 class NeuroLoveAI:
-    # ... (NeuroLoveAI implementation remains same as previous version) ...
+    def __init__(self, api_key: str):
+        self.groq = Groq(api_key=api_key)
+        self.safety = transformers_pipeline(
+            "text-classification", 
+            model=config.safety_model,
+            device=0 if torch.cuda.is_available() else -1
+        )
+        self.rate_limits = TTLCache(maxsize=10000, ttl=3600)
+
+    def generate_empathy(self, prompt: str, context: str, user_id: str) -> str:
+        if self.rate_limits.get(user_id, 0) >= config.rate_limit:
+            return "💔 Let's take a breath and continue later..."
+            
+        self.rate_limits[user_id] = self.rate_limits.get(user_id, 0) + 1
+        
+        try:
+            response = self.groq.chat.completions.create(
+                model="mixtral-8x7b-32768",
+                messages=[{
+                    "role": "system",
+                    "content": f"""As an empathy AI, integrate this context:
+                    {context}
+                    Respond with compassion and understanding."""
+                }, {
+                    "role": "user",
+                    "content": prompt
+                }],
+                temperature=0.7,
+                max_tokens=500
+            )
+            output = response.choices[0].message.content
+            return output if self._safety_check(output) else "🚫 Response filtered"
+        except Exception as e:
+            logging.error(f"Generation error: {str(e)}")
+            return "🌈 Every challenge is growth. Could you share more?"
+
+    def _safety_check(self, text: str) -> bool:
+        try:
+            result = self.safety(text[:512])
+            return result[0]['label'] == 'SAFE'
+        except Exception as e:
+            logging.error(f"Safety check error: {str(e)}")
+            return False
 
 class LoveFlow2025:
-    # ... (LoveFlow2025 implementation remains same as previous version) ...
+    def __init__(self, db_creds: dict, api_key: str):
+        self.knowledge = QuantumKnowledgeManager(**db_creds)
+        self.ai = NeuroLoveAI(api_key)
+        self.flow = self._build_neural_graph()
+
+    def _build_neural_graph(self):
+        workflow = StateGraph(NeuroState)
+        workflow.add_node("retrieve_memories", self._remember)
+        workflow.add_node("search_web", self._search)
+        workflow.add_node("synthesize", self._synthesize)
+        workflow.set_entry_point("retrieve_memories")
+        workflow.add_edge("retrieve_memories", "search_web")
+        workflow.add_edge("search_web", "synthesize")
+        workflow.add_edge("synthesize", END)
+        return workflow.compile()
+
+    def _remember(self, state: NeuroState) -> dict:
+        return {"memories": self.knowledge.retrieve_memory(state["dialog"][-1]["content"])}
+
+    def _search(self, state: NeuroState) -> dict:
+        with DDGS() as ddgs:
+            results = ddgs.text(state["dialog"][-1]["content"], max_results=config.search_depth)
+            return {"web_context": "\n".join(f"🌐 {r['title']}: {r['body'][:200]}" for r in results)}
+
+    def _synthesize(self, state: NeuroState) -> dict:
+        context = f"KNOWLEDGE:\n{state['memories']}\nWEB:\n{state['web_context']}"
+        return {"response": self.ai.generate_empathy(
+            state["dialog"][-1]["content"],
+            context,
+            state["user_id"]
+        )}
 
 # =====================
 # 💻 Streamlit Interface
@@ -99,17 +205,6 @@ def validate_credentials(db_id: str, region: str) -> bool:
         
     return True
 
-# =====================
-# 🔐 Correct Credentials
-# =====================
-ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
-DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
-REGION = "us-east1"  # Verified correct format from dashboard
-GROQ_KEY = "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"
-
-# =====================
-# 🚀 Streamlit UI
-# =====================
 st.set_page_config(page_title="LoveBot 2025", page_icon="💞", layout="wide")
 st.write("""
 <style>
@@ -117,6 +212,12 @@ st.write("""
     [data-testid="stStatusWidget"] {display: none}
 </style>
 """, unsafe_allow_html=True)
+
+# Pre-configured credentials
+ASTRA_TOKEN = "AstraCS:oiQEIEalryQYcYTAPJoujXcP:7492ccfd040ebc892d4e9fa8dc4fd9584c1eef1ff3488d4df778c309286e57e4"
+DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
+REGION = "us-east1"
+GROQ_KEY = "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"
 
 with st.sidebar:
     st.header("🔐 2025 Security Configuration")
@@ -136,7 +237,7 @@ with st.sidebar:
                     db_creds={
                         "token": astra_db_token,
                         "db_id": astra_db_id,
-                        "region": astra_db_region.replace("-", "")  # Auto-sanitize region
+                        "region": astra_db_region.replace("-", "")
                     },
                     api_key=groq_key
                 )
