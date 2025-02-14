@@ -35,23 +35,38 @@ from collections import defaultdict
 # =====================
 # ⚙️ Configuration Setup
 # =====================
+# =====================
+# ⚙️ Updated Configuration Setup
+# =====================
 class Config:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.embedding_model = "sentence-transformers/all-MiniLM-L6-v3"
-        self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english-v2"
-        self.rate_limit = 100  # Increased for 2025 hardware
+        # Use verified model names
+        self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+        self.safety_model = "Hate-speech-CNERG/dehatebert-mono-english"
+        self.rate_limit = 100
         self.max_text_length = 1500
         self.pdf_chunk_size = 750
-        self.search_depth = 5  # Increased web search results
+        self.search_depth = 5
         
         self._validate()
         
     def _validate(self):
         if self.max_text_length < 100:
             raise ValueError("max_text_length must be at least 100")
+        self._verify_model_availability()
+            
+    def _verify_model_availability(self):
+        try:
+            # Verify embedding model
+            transformers.AutoModel.from_pretrained(self.embedding_model)
+            # Verify safety model
+            transformers.AutoModelForSequenceClassification.from_pretrained(self.safety_model)
+        except Exception as e:
+            raise RuntimeError(f"Model verification failed: {str(e)}")
 
 config = Config()
+
 
 # =====================
 # 🔐 Streamlit Configuration
@@ -85,26 +100,35 @@ with st.sidebar:
     st.metric("Quantum Processing", f"{torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'Neural CPU'}")
 
 # =====================
-# 🧠 Enhanced Knowledge Engine
+# 🧠 Enhanced Knowledge Engine with Error Handling
 # =====================
 class QuantumKnowledgeManager:
     def __init__(self, token: str, db_id: str, region: str):
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name=config.embedding_model,
-            encode_kwargs={'normalize_embeddings': True}
-        )
-        
         try:
-            self.client = DataAPIClient(
-                token=token,
-                api_endpoint=f"https://{db_id}-{region}.apps.astra.datastax.com"
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=config.embedding_model,
+                encode_kwargs={'normalize_embeddings': True},
+                model_kwargs={'device': config.device}
             )
-            self.db = self.client.get_database()
-            self.collection = self.db.create_collection("lovebot_2025") if "lovebot_2025" not in self.db.list_collection_names() else self.db.get_collection("lovebot_2025")
         except Exception as e:
-            logging.error(f"Quantum DB Init Error: {str(e)}")
-            st.error("Failed to initialize quantum knowledge base")
+            st.error(f"Failed to initialize embeddings: {str(e)}")
             st.stop()
+            
+        try:
+            self.client = DataAPIClient(token)
+            self.db = self.client.get_database_by_api_endpoint(
+                f"https://{db_id}-{region}.apps.astra.datastax.com"
+            )
+            if "lovebot_2025" not in self.db.list_collection_names():
+                self.collection = self.db.create_collection("lovebot_2025")
+            else:
+                self.collection = self.db.get_collection("lovebot_2025")
+        except Exception as e:
+            st.error(f"Database connection failed: {str(e)}")
+            st.stop()
+
+    # Rest of the class remains the same with improved error handling...
+
 
     def _process_pdf(self, pdf_bytes: bytes) -> List[str]:
         try:
