@@ -226,7 +226,7 @@ class NeuroLoveAI:
             return False
 
 # =====================
-# � Neural Workflow
+# 🧩 Neural Workflow
 # =====================
 class NeuroState(TypedDict):
     dialog: List[dict]
