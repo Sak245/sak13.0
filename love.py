@@ -2,28 +2,32 @@
 # 🛠️ Initial Configuration
 # =====================
 import sys
-sys.modules['torch.classes'] = None
+sys.modules['torch.classes'] = None  # Legacy compatibility
+
+import warnings
+import os
 import re
-import uuid
-import time
-import logging
-import traceback
 import torch
-import fitz
-import numpy as np
-from typing import TypedDict, List
-from cachetools import TTLCache
 import transformers
+import fitz
 from astrapy import DataAPIClient
-from duckduckgo_search import DDGS
-from transformers import pipeline as transformers_pipeline
-from langgraph.graph import StateGraph, END
-from langchain_huggingface import HuggingFaceEmbeddings
-from groq import Groq
+import logging
+import uuid
 import streamlit as st
 
 # =====================
-# 🧠 Core AI Components
+# 📦 Package Imports
+# =====================
+from langgraph.graph import StateGraph, END
+from langchain_huggingface import HuggingFaceEmbeddings
+from groq import Groq
+from duckduckgo_search import DDGS
+from transformers import pipeline as transformers_pipeline
+from typing import TypedDict, List
+from cachetools import TTLCache
+
+# =====================
+# ⚙️ Configuration Setup
 # =====================
 class Config:
     def __init__(self):
@@ -34,124 +38,166 @@ class Config:
         self.max_text_length = 1500
         self.pdf_chunk_size = 750
         self.search_depth = 5
+        
+        self._validate()
+        
+    def _validate(self):
+        if self.max_text_length < 100:
+            raise ValueError("max_text_length must be at least 100")
+        self._verify_model_availability()
+            
+    def _verify_model_availability(self):
+        try:
+            transformers.AutoModel.from_pretrained(self.embedding_model)
+            transformers.AutoModelForSequenceClassification.from_pretrained(self.safety_model)
+        except Exception as e:
+            raise RuntimeError(f"Model verification failed: {str(e)}")
 
 config = Config()
 
-class NeuroState(TypedDict):
-    dialog: List[dict]
-    memories: List[str]
-    web_context: str
-    user_id: str
+# =====================
+# 🔐 Streamlit Configuration
+# =====================
+st.set_page_config(page_title="LoveBot 2025", page_icon="💞", layout="wide")
+st.write("""
+<style>
+    .reportview-container {background: #fff5f8}
+    [data-testid="stStatusWidget"] {display: none}
+    .pdf-uploader section {padding: 2rem}
+</style>
+""", unsafe_allow_html=True)
 
-class QuantumKnowledgeManager:
-    def __init__(self, token: str, db_id: str, region: str):
-        self.endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
+# =====================
+# 🔑 Credential Validation
+# =====================
+def validate_credentials(astra_db_id: str, astra_db_region: str):
+    uuid_pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    region_pattern = r"^[a-z]{2}-[a-z]+-\d$"
+    
+    if not re.match(uuid_pattern, astra_db_id):
+        st.error("Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
+        st.stop()
+        
+    if not re.match(region_pattern, astra_db_region):
+        st.error("Invalid Region format! Example: us-east1")
+        st.stop()
+
+# =====================
+# 🔑 Credential Interface
+# =====================
+with st.sidebar:
+    st.header("🔐 2025 Quantum Security")
+    
+    # Astra DB Credentials
+    with st.expander("Astra DB Configuration"):
+        astra_db_token = st.text_input("Database Token", type="password")
+        astra_db_id = st.text_input("Cluster ID", type="password",
+                                    help="Format: 00000000-0000-0000-0000-000000000000")
+        astra_db_region = st.text_input("Region", value="us-east1",
+                                       help="Example: us-east1")
+    
+    # Groq API
+    with st.expander("Groq NeuroKey"):
+        groq_key = st.text_input("API Key", type="password")
+    
+    # Connection Initialization
+    if st.button("🚀 Initialize Quantum Connection", type="primary"):
         try:
-            self.client = DataAPIClient(token)
-            self.db = self.client.get_database_by_api_endpoint(self.endpoint)
-            
-            # SAK Collection Configuration
-            if "sak" not in self.db.list_collection_names():
-                try:
-                    self.collection = self.db.create_collection(
-                        "sak",
-                        options={"vector": {
-                            "dimension": 384,
-                            "metric": "cosine"
-                        }}
-                    )
-                    logging.info("Created new SAK collection")
-                except Exception as create_error:
-                    raise RuntimeError(f"""🚨 Collection Creation Failed
-                    Ensure your token has 'Database Administrator' privileges
-                    Raw error: {str(create_error)}""")
-            else:
-                self.collection = self.db.get_collection("sak")
-                
+            validate_credentials(astra_db_id, astra_db_region)
+            st.session_state.valid_creds = True
+            st.success("Credentials validated!")
+        except Exception as e:
+            st.error(f"Connection failed: {str(e)}")
+    
+    st.header("📊 System Health")
+    if torch.cuda.is_available():
+        st.metric("Quantum Processor", torch.cuda.get_device_name(0))
+    else:
+        st.metric("Neural Processor", "Quantum Simulation Mode")
+
+# =====================
+# 📚 Quantum Knowledge Engine
+# =====================
+class KnowledgeManager:
+    def __init__(self, token: str, db_id: str, region: str):
+        try:
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=config.embedding_model,
                 encode_kwargs={'normalize_embeddings': True},
                 model_kwargs={'device': config.device}
             )
-            
         except Exception as e:
-            raise RuntimeError(f"""🔌 Quantum Connection Failure
-            Endpoint: {self.endpoint}
-            Token: {token[:25]}... (Full: {token[:15]}...{token[-10:]})
-            Diagnostic Steps:
-            1. IP Whitelisting: https://dtsx.io/ip-whitelist-guide
-            2. Token Verification: https://astra.datastax.com/org/tokens
-            3. Connection Test:
-               ```python
-               from astrapy import DataAPIClient
-               try:
-                   client = DataAPIClient("{token}")
-                   db = client.get_database_by_api_endpoint("{self.endpoint}")
-                   print("Collections:", db.list_collection_names())
-               except Exception as e:
-                   print("Connection failed:", str(e))
-               ```""")
-
-    def _process_content(self, content: str) -> List[str]:
-        return [content[i:i+config.pdf_chunk_size] 
-                for i in range(0, len(content), config.pdf_chunk_size)]
-
-    def add_knowledge(self, content: str, source: str):
+            st.error(f"Embedding initialization failed: {str(e)}")
+            st.stop()
+            
         try:
-            chunks = self._process_content(content)
-            for chunk in chunks:
+            self.client = DataAPIClient(token)
+            self.db = self.client.get_database_by_api_endpoint(
+                f"https://{db_id}-{region}.apps.astra.datastax.com"
+            )
+            self.collection = self.db.create_collection("lovebot_2025") \
+                if "lovebot_2025" not in self.db.list_collection_names() \
+                else self.db.get_collection("lovebot_2025")
+        except Exception as e:
+            st.error(f"Database connection failed: {str(e)}")
+            st.stop()
+
+    def _process_content(self, content: bytes, file_type: str) -> List[str]:
+        try:
+            if file_type == "application/pdf":
+                doc = fitz.open(stream=content, filetype="pdf")
+                return [page.get_text("text") for page in doc]
+            return [content.decode()]
+        except Exception as e:
+            logging.error(f"Content processing error: {str(e)}")
+            return []
+
+    def add_knowledge(self, content: bytes, filename: str):
+        chunks = self._process_content(content, filename.split(".")[-1])
+        for chunk in chunks:
+            try:
                 embedding = self.embeddings.embed_query(chunk)
                 self.collection.insert_one({
                     "text": chunk,
-                    "embedding": embedding.tolist(),
-                    "source": source,
-                    "timestamp": time.time()
+                    "embedding": embedding,
+                    "source": filename
                 })
-        except Exception as e:
-            logging.error(f"Knowledge injection error: {str(e)}")
+            except Exception as e:
+                logging.error(f"Knowledge insertion error: {str(e)}")
 
-    def retrieve_memory(self, query: str, limit=5) -> List[str]:
+    def search_memories(self, query: str) -> List[str]:
         try:
-            query_embed = self.embeddings.embed_query(query).tolist()
-            results = self.collection.aggregate([
-                {"$vectorSearch": {
-                    "queryVector": query_embed,
-                    "path": "embedding",
-                    "numCandidates": 150,
-                    "limit": limit,
-                    "index": "vector_index"
-                }},
-                {"$project": {"text": 1, "_id": 0}}
-            ])
-            return [doc["text"] for doc in results]
+            embedding = self.embeddings.embed_query(query)
+            results = self.collection.find(
+                {},
+                vector=embedding,
+                limit=3
+            )
+            return [doc["text"] for doc in results["data"]["documents"]]
         except Exception as e:
-            logging.error(f"Memory retrieval error: {str(e)}")
+            logging.error(f"Search error: {str(e)}")
             return []
 
-class NeuroLoveAI:
+# =====================
+# 🧠 Neuro AI Service
+# =====================
+class AIService:
     def __init__(self, api_key: str):
         self.groq = Groq(api_key=api_key)
-        self.safety = transformers_pipeline(
-            "text-classification", 
+        self.safety_check = transformers_pipeline(
+            "text-classification",
             model=config.safety_model,
-            device=0 if torch.cuda.is_available() else -1
+            device=0 if config.device == "cuda" else -1
         )
-        self.rate_limits = TTLCache(maxsize=10000, ttl=3600)
-
-    def generate_empathy(self, prompt: str, context: str, user_id: str) -> str:
-        if self.rate_limits.get(user_id, 0) >= config.rate_limit:
-            return "💔 Let's take a breath and continue later..."
-            
-        self.rate_limits[user_id] = self.rate_limits.get(user_id, 0) + 1
+        self.search_cache = TTLCache(maxsize=1000, ttl=3600)
         
+    def generate_response(self, prompt: str, context: str) -> str:
         try:
             response = self.groq.chat.completions.create(
                 model="mixtral-8x7b-32768",
                 messages=[{
                     "role": "system",
-                    "content": f"""As an empathy AI, integrate this context:
-                    {context}
-                    Respond with compassion and understanding."""
+                    "content": f"Provide compassionate relationship advice using: {context}"
                 }, {
                     "role": "user",
                     "content": prompt
@@ -160,188 +206,102 @@ class NeuroLoveAI:
                 max_tokens=500
             )
             output = response.choices[0].message.content
-            return output if self._safety_check(output) else "🚫 Response filtered"
+            return output if self._is_safe(output) else "Response filtered for safety"
         except Exception as e:
             logging.error(f"Generation error: {str(e)}")
-            return "🌈 Every challenge is growth. Could you share more?"
+            return "Let's approach this with understanding. Could you elaborate?"
 
-    def _safety_check(self, text: str) -> bool:
-        try:
-            result = self.safety(text[:512])
-            return result[0]['label'] == 'SAFE'
-        except Exception as e:
-            logging.error(f"Safety check error: {str(e)}")
-            return False
+    def _is_safe(self, text: str) -> bool:
+        result = self.safety_check(text[:config.max_text_length])
+        return result[0]['label'] == 'LABEL_0'
 
-class LoveFlow2025:
-    def __init__(self, db_creds: dict, api_key: str):
-        self.knowledge = QuantumKnowledgeManager(**db_creds)
-        self.ai = NeuroLoveAI(api_key)
-        self.flow = self._build_neural_graph()
+# =====================
+# 🧩 Workflow Management
+# =====================
+class WorkflowState(TypedDict):
+    messages: List[str]
+    context: str
+    user_id: str
 
-    def _build_neural_graph(self):
-        workflow = StateGraph(NeuroState)
-        workflow.add_node("retrieve_memories", self._remember)
-        workflow.add_node("search_web", self._search)
-        workflow.add_node("synthesize", self._synthesize)
-        workflow.set_entry_point("retrieve_memories")
-        workflow.add_edge("retrieve_memories", "search_web")
-        workflow.add_edge("search_web", "synthesize")
-        workflow.add_edge("synthesize", END)
+class WorkflowManager:
+    def __init__(self, db_creds: dict, groq_key: str):
+        self.knowledge = KnowledgeManager(**db_creds)
+        self.ai = AIService(groq_key)
+        self.workflow = self._build_workflow()
+        
+    def _build_workflow(self):
+        workflow = StateGraph(WorkflowState)
+        
+        workflow.add_node("retrieve", self.retrieve_knowledge)
+        workflow.add_node("generate", self.generate_response)
+        
+        workflow.set_entry_point("retrieve")
+        workflow.add_edge("retrieve", "generate")
+        workflow.add_edge("generate", END)
+        
         return workflow.compile()
-
-    def _remember(self, state: NeuroState) -> dict:
-        return {"memories": self.knowledge.retrieve_memory(state["dialog"][-1]["content"])}
-
-    def _search(self, state: NeuroState) -> dict:
-        with DDGS() as ddgs:
-            results = ddgs.text(state["dialog"][-1]["content"], max_results=config.search_depth)
-            return {"web_context": "\n".join(f"🌐 {r['title']}: {r['body'][:200]}" for r in results)}
-
-    def _synthesize(self, state: NeuroState) -> dict:
-        context = f"KNOWLEDGE:\n{state['memories']}\nWEB:\n{state['web_context']}"
-        return {"response": self.ai.generate_empathy(
-            state["dialog"][-1]["content"],
-            context,
-            state["user_id"]
+    
+    def retrieve_knowledge(self, state: WorkflowState):
+        return {"context": "\n".join(
+            self.knowledge.search_memories(state["messages"][-1])
         )}
-
-# =====================
-# 💻 Streamlit Interface
-# =====================
-def validate_credentials(db_id: str, region: str) -> bool:
-    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+-\d+$")
     
-    if not uuid_pattern.match(db_id):
-        st.error("❌ Invalid DB Cluster ID! Must be UUID format")
-        return False
-        
-    if not region_pattern.match(region):
-        st.error("❌ Region must be format 'us-east-1'")
-        return False
-        
-    return True
-
-st.set_page_config(page_title="LoveBot 2025", page_icon="💞", layout="wide")
-st.write("""
-<style>
-    .stAlert {padding: 20px!important; border-radius: 10px!important;}
-    .stTextInput input {border: 1px solid #ff69b4!important;}
-</style>
-""", unsafe_allow_html=True)
-
-# Security credentials
-ASTRA_TOKEN = "AstraCS:YzTkrbyuwALNUbsxXYYEOlHi:e7d4e9f2ad71f198b962813cd535f3a2a6f6bf9ea88420d286aca5803e280a89"
-DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
-REGION = "us-east-1"
-GROQ_KEY = "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"
-
-with st.sidebar:
-    st.header("🔐 2025 Security Configuration")
-    
-    with st.expander("Astra DB Quantum Security", expanded=True):
-        astra_db_token = st.text_input("Quantum Token", value=ASTRA_TOKEN, type="password")
-        astra_db_id = st.text_input("DB Cluster ID", value=DB_ID)
-        astra_db_region = st.text_input("Neural Region", value=REGION)
-
-    with st.expander("Groq API v3"):
-        groq_key = st.text_input("NeuroKey", value=GROQ_KEY, type="password")
-
-    if st.button("🚀 Initialize Quantum Connection", type="primary"):
-        if validate_credentials(astra_db_id, astra_db_region):
-            try:
-                st.session_state.neuro_flow = LoveFlow2025(
-                    db_creds={
-                        "token": astra_db_token,
-                        "db_id": astra_db_id,
-                        "region": astra_db_region
-                    },
-                    api_key=groq_key
-                )
-                st.success("✅ Quantum Neural Link Established!")
-            except Exception as e:
-                endpoint = f"https://{astra_db_id}-{astra_db_region}.apps.astra.datastax.com"
-                st.error(f"""
-                ❗ Critical Connection Failure
-                Endpoint: {endpoint}
-                Token: {astra_db_token[:25]}... (Full: {astra_db_token[:15]}...{astra_db_token[-10:]})
-                
-                🔥 REQUIRED ACTIONS:
-                1. Verify IP Whitelisting: https://dtsx.io/ip-whitelist-guide
-                2. Check Token Permissions: https://astra.datastax.com/org/tokens
-                3. Test Connection Manually:
-                ```python
-                from astrapy import DataAPIClient
-                try:
-                    client = DataAPIClient("{astra_db_token}")
-                    db = client.get_database_by_api_endpoint("{endpoint}")
-                    print("Collections:", db.list_collection_names())
-                except Exception as e:
-                    print("ERROR:", str(e))
-                ```""")
-        else:
-            st.error("Fix validation errors first")
-
-    st.header("📊 System Health")
-    if 'neuro_flow' in st.session_state:
-        st.success("🟢 Neural Network Operational")
-        st.metric("Processing Power", f"{config.device.upper()} ・ Torch {torch.__version__}")
-    else:
-        st.warning("🔴 System Offline")
+    def generate_response(self, state: WorkflowState):
+        return {"response": self.ai.generate_response(
+            state["messages"][-1],
+            state["context"]
+        )}
 
 # =====================
 # 💞 Main Interface
 # =====================
-if "dialog" not in st.session_state:
-    st.session_state.dialog = []
-if "user_id" not in st.session_state:
-    st.session_state.user_id = str(uuid.uuid4())
-
-st.title("💞 LoveBot 2025 - Compassionate AI")
+if "workflow" not in st.session_state and st.session_state.get("valid_creds"):
+    try:
+        st.session_state.workflow = WorkflowManager(
+            {"token": astra_db_token, "db_id": astra_db_id, "region": astra_db_region},
+            groq_key
+        )
+        st.session_state.messages = []
+        st.session_state.user_id = str(uuid.uuid4())
+    except Exception as e:
+        st.error(f"System initialization failed: {str(e)}")
 
 # Knowledge Upload
-with st.expander("🧠 Upload Relationship Knowledge"):
-    uploaded_files = st.file_uploader("Add PDF/text files", 
-                                    type=["pdf", "txt", "md"],
-                                    accept_multiple_files=True)
-    if uploaded_files and 'neuro_flow' in st.session_state:
-        for file in uploaded_files:
-            try:
-                if file.type == "application/pdf":
-                    doc = fitz.open(stream=file.read(), filetype="pdf")
-                    content = "".join(page.get_text() for page in doc)
-                else:
-                    content = file.read().decode()
-                st.session_state.neuro_flow.knowledge.add_knowledge(content, file.name)
-                st.toast(f"📥 Learned from {file.name}")
-            except Exception as e:
-                st.error(f"Upload failed: {str(e)}")
+with st.sidebar:
+    if st.session_state.get("valid_creds"):
+        files = st.file_uploader("Upload Relationship Knowledge",
+                               type=["pdf", "txt"],
+                               accept_multiple_files=True)
+        if files:
+            for file in files:
+                st.session_state.workflow.knowledge.add_knowledge(
+                    file.getvalue(),
+                    file.name
+                )
+                st.toast(f"📚 Learned from {file.name}")
 
 # Chat Interface
-for msg in st.session_state.dialog:
-    avatar = "💬" if msg["role"] == "user" else "💞"
-    with st.chat_message(msg["role"], avatar=avatar):
-        st.write(msg["content"])
+st.title("💞 LoveBot 2025 - Quantum Empathy Engine")
 
-if prompt := st.chat_input("Share your relationship thoughts..."):
-    st.session_state.dialog.append({"role": "user", "content": prompt})
+if "messages" in st.session_state:
+    for msg in st.session_state.messages:
+        with st.chat_message("user" if msg["role"] == "user" else "assistant"):
+            st.write(msg["content"])
+
+if prompt := st.chat_input("How can I help your relationship today?"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
     
-    if 'neuro_flow' not in st.session_state:
-        st.error("Initialize quantum connection first!")
-    else:
-        try:
-            with st.status("💭 Processing with Compassion...", expanded=True):
-                result = st.session_state.neuro_flow.flow.invoke({
-                    "dialog": st.session_state.dialog,
-                    "memories": [],
-                    "web_context": "",
-                    "user_id": st.session_state.user_id
-                })
-                response = result.get("response", "Let's explore this together...")
-                st.session_state.dialog.append({"role": "assistant", "content": response})
-        except Exception as e:
-            st.error("Quantum connection unstable - try again")
-            logging.error(f"Main flow error: {traceback.format_exc()}")
+    try:
+        with st.status("💭 Quantum Processing..."):
+            result = st.session_state.workflow.workflow.invoke({
+                "messages": [m["content"] for m in st.session_state.messages],
+                "context": "",
+                "user_id": st.session_state.user_id
+            })
+            response = result.get("response", "Let's explore this together")
+            st.session_state.messages.append({"role": "assistant", "content": response})
+    except Exception as e:
+        st.error("Quantum connection unstable - please reconnect")
+        logging.error(traceback.format_exc())
     
     st.rerun()
