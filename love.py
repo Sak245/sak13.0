@@ -69,7 +69,7 @@ class QuantumKnowledgeManager:
         except socket.timeout:
             raise RuntimeError("🚨 Network timeout! Check internet connection")
         except socket.gaierror:
-            raise RuntimeError(f"🔍 DNS error! Verify endpoint format: {endpoint}")
+            raise RuntimeError(f"🔍 DNS error! Verify endpoint: {endpoint}")
         except Exception as e:
             raise RuntimeError(f"DB connection failed: {str(e)}")
 
@@ -192,14 +192,14 @@ class LoveFlow2025:
 # =====================
 def validate_credentials(db_id: str, region: str) -> bool:
     uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
-    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+-\d$")  # Matches "us-east1"
+    region_pattern = re.compile(r"^[a-z]{2}-[a-z]+\d$")  # Corrected pattern for 'us-east1'
     
     if not uuid_pattern.match(db_id):
         st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
         return False
         
     if not region_pattern.match(region):
-        st.error("❌ Invalid Region! Use EXACT format like 'us-east1'")
+        st.error("❌ Invalid Region! Use EXACT format like 'us-east1' (no hyphen before number)")
         return False
         
     return True
@@ -245,9 +245,10 @@ with st.sidebar:
                 st.error(f"""
                 ❌ Connection failed: {str(e)}
                 🔧 Final Verification:
-                1. Confirm token role: 'Database Administrator'
-                2. Whitelist IP in Astra DB dashboard
-                3. Verify endpoint: https://{DB_ID}-{REGION}.apps.astra.datastax.com
+                1. Confirm region format: 'us-east1' (NOT 'us-east-1')
+                2. Check token permissions in Astra DB dashboard
+                3. Whitelist IP if behind firewall
+                4. Verify endpoint: https://{DB_ID}-{REGION}.apps.astra.datastax.com
                 """)
         else:
             st.error("Fix validation errors first")
