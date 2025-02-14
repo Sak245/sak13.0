@@ -21,8 +21,6 @@ from langgraph.graph import StateGraph, END
 from langchain_huggingface import HuggingFaceEmbeddings
 from groq import Groq
 import streamlit as st
-import socket
-import requests
 
 # =====================
 # 🧠 Core AI Components
@@ -49,30 +47,35 @@ class QuantumKnowledgeManager:
     def __init__(self, token: str, db_id: str, region: str):
         self.endpoint = f"https://{db_id}-{region}.apps.astra.datastax.com"
         try:
-            # Pre-check endpoint accessibility
-            response = requests.get(self.endpoint, timeout=10)
-            if response.status_code != 200:
-                raise ConnectionError(f"Endpoint unreachable (HTTP {response.status_code})")
+            self.client = DataAPIClient(token)
+            self.db = self.client.get_database_by_api_endpoint(self.endpoint)
             
+            # Initialize with latest collection schema
+            if "lovebot_2025" not in self.db.list_collection_names():
+                self.collection = self.db.create_collection(
+                    "lovebot_2025",
+                    options={"vector": {
+                        "dimension": 384,
+                        "metric": "cosine"
+                    }}
+                )
+            else:
+                self.collection = self.db.get_collection("lovebot_2025")
+                
             self.embeddings = HuggingFaceEmbeddings(
                 model_name=config.embedding_model,
                 encode_kwargs={'normalize_embeddings': True},
                 model_kwargs={'device': config.device}
             )
-            self.client = DataAPIClient(token)
-            self.db = self.client.get_database_by_api_endpoint(self.endpoint)
             
-            if "lovebot_2025" not in self.db.list_collection_names():
-                self.collection = self.db.create_collection("lovebot_2025")
-            else:
-                self.collection = self.db.get_collection("lovebot_2025")
-                
         except Exception as e:
-            raise RuntimeError(f"""🚨 Connection failed: {str(e)}
-            🔥 REQUIRED ACTIONS:
-            1. Whitelist IP: https://docs.datastax.com/en/astra/docs/manage-org-details.html#ip-addresses
-            2. Verify token has 'Database Administrator' role
-            3. Test endpoint manually: 
+            raise RuntimeError(f"""🚀 Quantum Connection Protocol Failed
+            🔑 Token: {token[:15]}... (Database Administrator role)
+            🌍 Endpoint: {self.endpoint}
+            🔧 REQUIRED ACTIONS:
+            1. WHITELIST IP: https://dtsx.io/ip-whitelist-guide
+            2. Verify token permissions
+            3. Test connection manually:
                ```python
                from astrapy import DataAPIClient
                client = DataAPIClient("{token}")
@@ -91,7 +94,7 @@ class QuantumKnowledgeManager:
                 embedding = self.embeddings.embed_query(chunk)
                 self.collection.insert_one({
                     "text": chunk,
-                    "embedding": embedding,
+                    "embedding": embedding.tolist(),
                     "source": source,
                     "timestamp": time.time()
                 })
@@ -100,7 +103,7 @@ class QuantumKnowledgeManager:
 
     def retrieve_memory(self, query: str, limit=5) -> List[str]:
         try:
-            query_embed = self.embeddings.embed_query(query)
+            query_embed = self.embeddings.embed_query(query).tolist()
             results = self.collection.aggregate([
                 {"$vectorSearch": {
                     "queryVector": query_embed,
@@ -202,11 +205,11 @@ def validate_credentials(db_id: str, region: str) -> bool:
     region_pattern = re.compile(r"^[a-z]{2}-[a-z]+\d$")
     
     if not uuid_pattern.match(db_id):
-        st.error("❌ Invalid DB Cluster ID! Must be UUID format: 8-4-4-4-12 hex chars")
+        st.error("❌ Invalid DB Cluster ID! Must be UUID format")
         return False
         
     if not region_pattern.match(region):
-        st.error("❌ Invalid Region! Use EXACT format like 'us-east1'")
+        st.error("❌ Region must be format 'us-east1'")
         return False
         
     return True
@@ -219,8 +222,8 @@ st.write("""
 </style>
 """, unsafe_allow_html=True)
 
-# Updated credentials from dashboard
-ASTRA_TOKEN = "AstraCS:StvvgQYXxisnrwROtPcrZKEp:0adda620b2659051ba5075e1dcbb81ddc6fa0493a251eee4e4d76dff735c1d31"
+# Updated credentials from Feb 15
+ASTRA_TOKEN = "AstraCS:YzTkrbyuwALNUbsxXYYEOlHi:e7d4e9f2ad71f198b962813cd535f3a2a6f6bf9ea88420d286aca5803e280a89"
 DB_ID = "40e5db47-786f-4907-acf1-17e1628e48ac"
 REGION = "us-east1"
 GROQ_KEY = "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"
@@ -247,16 +250,17 @@ with st.sidebar:
                     },
                     api_key=groq_key
                 )
-                st.success("✅ Quantum connection established!")
+                st.success("✅ Quantum Neural Link Established!")
             except Exception as e:
                 endpoint = f"https://{astra_db_id}-{astra_db_region}.apps.astra.datastax.com"
                 st.error(f"""
-                ❌ Connection failed: {str(e)}
-                🔥 IMMEDIATE ACTION REQUIRED:
-                1. Go to Astra Dashboard → Organization Settings → IP Access List
-                2. Click "Add Current IP Address"
-                3. Verify token role is 'Database Administrator'
-                4. Test endpoint manually:
+                ❌ Quantum Link Failure
+                🔑 Token: {astra_db_token[:15]}... (Database Administrator)
+                🌍 Endpoint: {endpoint}
+                🔥 CRITICAL STEPS:
+                1. IP Whitelisting: https://dtsx.io/ip-whitelist-guide
+                2. Verify token in Astra Dashboard
+                3. Test connection:
                    ```python
                    from astrapy import DataAPIClient
                    client = DataAPIClient("{astra_db_token}")
@@ -268,8 +272,8 @@ with st.sidebar:
 
     st.header("📊 System Health")
     if 'neuro_flow' in st.session_state:
-        st.success("🟢 System Operational")
-        st.metric("Processing Power", config.device.upper())
+        st.success("🟢 Neural Network Operational")
+        st.metric("Processing Power", f"{config.device.upper()} ・ Torch {torch.__version__}")
     else:
         st.warning("🔴 System Offline")
 
