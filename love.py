@@ -211,8 +211,6 @@ class KnowledgeManager:
             logging.error(f"Search error: {str(e)}")
             return []
 
-# ... [Keep the rest of the code from previous implementation unchanged] ...
-
 # =====================
 # 🔍 Search Management
 # =====================
@@ -348,9 +346,9 @@ if "workflow_manager" not in st.session_state or st.session_state.groq_key != gr
     st.session_state.workflow_manager = WorkflowManager({
         "id": astra_db_id,
         "region": astra_db_region,
-        "app_token": astra_db_app_token,
-        "client_id": astra_db_client_id,
-        "client_secret": astra_db_client_secret
+        "app_token": astra_db_token,
+        "client_id": astra_db_id,
+        "client_secret": astra_db_region
     }, groq_key)
 
 if "user_id" not in st.session_state:
